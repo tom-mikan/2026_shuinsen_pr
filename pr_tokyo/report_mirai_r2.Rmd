@@ -2086,6 +2086,11 @@ stat_tbl4 %>%
 ## 7-3. 散布図：全党の実際 → 仮定の移動
 
 ```{r dist4_scatter, fig.height=7}
+nd2     <- tibble(支持率 = exp(seq(log(0.15), log(25), length.out = 300)))
+pred2   <- predict(ols_ref, newdata = list(支持率 = nd2$支持率), interval = "prediction")
+ribbon2 <- bind_cols(nd2, as.data.frame(pred2)) %>%
+  mutate(lwr = exp(lwr), fit = exp(fit), upr = exp(upr))
+
 party_colors5 <- c(
   "チームみらい（実際）"   = "#E74C3C",   "チームみらい（仮定）"   = "#FADBD8",
   "参政党（実際）"         = "#E07B00",   "参政党（仮定）"         = "#FAD7A0",
