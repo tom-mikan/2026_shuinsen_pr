@@ -1883,332 +1883,7 @@ z スコア = **`r sprintf("%.2f", mirai_z)` σ**
 
 ---
 
-# 7. 仮説：「みらい票の90%は参政党の票だった」を検定する {.tabset}
-
-<div class="callout-box">
-**仮説の設定**
-
-もしチームみらいの票の90%が本来は参政党に入るべき票だったとしたら、
-「参政党の真の得票数」はどうなるか？
-そしてその数値は **統計的に説明できるか**？
-
-- **帰無仮説H₀**：参政党の本来の得票率は世論調査支持率3.4%と整合する（自然な範囲）
-- **対立仮説H₁**：90%移転後の参政党票数は世論調査から見て統計的に異常
-</div>
-
-## 7-1. 移転後の票数計算
-
-```{r transfer_calc}
-transfer_ratio <- 0.9  # 移転仮定割合
-
-# 市区町村別に移転計算
-df_transfer <- df_unit %>%
-  filter(政党 %in% c("チームみらい", "参政党")) %>%
-  select(市区町村, 政党, 票数, 単位合計, 得票率) %>%
-  pivot_wider(names_from = 政党, values_from = c(票数, 得票率),
-              names_sep = "_") %>%
-  rename(
-    みらい票数   = `票数_チームみらい`,
-    参政票数     = `票数_参政党`,
-    みらい率     = `得票率_チームみらい`,
-    参政率       = `得票率_参政党`
-  ) %>%
-  mutate(
-    移転票数         = round(みらい票数 * transfer_ratio),
-    参政票数_仮定    = 参政票数 + 移転票数,
-    みらい票数_仮定  = みらい票数 - 移転票数,
-    参政率_仮定      = round(参政票数_仮定 / 単位合計 * 100, 2),
-    みらい率_仮定    = round(みらい票数_仮定 / 単位合計 * 100, 2)
-  )
-
-# 東京全体の集計
-total_ballot <- df_unit %>%
-  group_by(市区町村) %>% summarise(合計 = first(単位合計), .groups = "drop") %>%
-  pull(合計) %>% sum()
-
-total_mirai_actual  <- sum(df_transfer$みらい票数,     na.rm = TRUE)
-total_sansei_actual <- sum(df_transfer$参政票数,       na.rm = TRUE)
-total_transferred   <- sum(df_transfer$移転票数,       na.rm = TRUE)
-total_sansei_hypo   <- sum(df_transfer$参政票数_仮定,  na.rm = TRUE)
-total_mirai_hypo    <- sum(df_transfer$みらい票数_仮定, na.rm = TRUE)
-
-sansei_rate_actual  <- total_sansei_actual / total_ballot * 100
-sansei_rate_hypo    <- total_sansei_hypo   / total_ballot * 100
-mirai_rate_actual   <- total_mirai_actual  / total_ballot * 100
-mirai_rate_hypo     <- total_mirai_hypo    / total_ballot * 100
-
-tibble(
-  区分           = c("チームみらい（実際）", "参政党（実際）",
-                     "─── 90%移転後 ───",
-                     "チームみらい（仮定）", "参政党（仮定）"),
-  票数           = c(total_mirai_actual, total_sansei_actual, NA,
-                     total_mirai_hypo,   total_sansei_hypo),
-  東京得票率     = c(mirai_rate_actual,  sansei_rate_actual, NA,
-                     mirai_rate_hypo,    sansei_rate_hypo),
-  世論調査支持率 = c(0.2, 3.4, NA, 0.2, 3.4),
-  倍率           = c(mirai_rate_actual / 0.2, sansei_rate_actual / 3.4, NA,
-                     mirai_rate_hypo   / 0.2, sansei_rate_hypo   / 3.4)
-) %>%
-  mutate(
-    票数           = ifelse(is.na(票数),           "—", formatC(票数, format = "d", big.mark = ",")),
-    東京得票率     = ifelse(is.na(東京得票率),     "—", sprintf("%.2f%%", 東京得票率)),
-    世論調査支持率 = ifelse(is.na(世論調査支持率), "—", paste0(世論調査支持率, "%")),
-    倍率           = ifelse(is.na(倍率),           "—", sprintf("× %.1f", 倍率))
-  ) %>%
-  datatable(
-    rownames = FALSE,
-    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
-    class    = "stripe hover compact"
-  ) %>%
-  formatStyle("区分",
-    fontWeight      = styleEqual(c("参政党（仮定）","チームみらい（仮定）"), c("bold","bold")),
-    backgroundColor = styleEqual(
-      c("参政党（仮定）","チームみらい（仮定）","─── 90%移転後 ───"),
-      c("#FFF3E0","#E8F4F8","#F5F5F5")
-    )
-  )
-```
-
-<div class="callout-result">
-90%を移転すると、参政党の東京得票率は `r sprintf("%.1f%%", sansei_rate_actual)` → **`r sprintf("%.1f%%", sansei_rate_hypo)`** になります。
-世論調査支持率3.4%に対する倍率は **`r sprintf("× %.1f", sansei_rate_hypo/3.4)`** 倍です（実際の参政党は `r sprintf("× %.1f", sansei_rate_actual/3.4)` 倍）。
-</div>
-
-## 7-2. 回帰モデルによる妥当性検定
-
-既存の「世論調査支持率 → 東京得票率」の対数回帰モデル（チームみらい除く8政党で構築）に、
-仮定後の参政党得票率を当てはめて **予測区間から外れるか** を確認します。
-
-```{r transfer_regression_test, fig.height=6}
-# 仮定後の参政党平均得票率（加重平均）
-sansei_hypo_mean   <- weighted.mean(df_transfer$参政率_仮定,  df_transfer$単位合計, na.rm = TRUE)
-actual_sansei_mean <- filter(merged, 政党 == "参政党") %>% pull(東京平均得票率)
-
-# OLS モデル（ols_ref）から参政党支持率3.4%時の予測区間
-pred_sansei    <- predict(ols_ref, newdata = data.frame(支持率 = 3.4), interval = "prediction")
-pred_sansei_df <- as.data.frame(pred_sansei) %>% mutate(across(everything(), exp))
-pi_lower <- pred_sansei_df$lwr
-pi_upper <- pred_sansei_df$upr
-
-# 散布図用データ
-hypo_point <- tibble(
-  支持率         = 3.4,
-  東京平均得票率 = sansei_hypo_mean,
-  is_mirai       = FALSE,
-  政党           = sprintf("参政党\n（仮定：+%.0f万票）", total_transferred / 1e4),
-  type           = "仮定"
-)
-
-plot_df <- merged %>%
-  mutate(type = ifelse(is_mirai, "みらい（実際）", "参照政党")) %>%
-  bind_rows(hypo_point)
-
-# 予測区間リボン
-nd2     <- tibble(支持率 = exp(seq(log(0.15), log(25), length.out = 300)))
-pred2   <- predict(ols_ref, newdata = list(支持率 = nd2$支持率), interval = "prediction")
-ribbon2 <- bind_cols(nd2, as.data.frame(pred2)) %>%
-  mutate(lwr = exp(lwr), fit = exp(fit), upr = exp(upr))
-
-ggplot(plot_df, aes(x = 支持率, y = 東京平均得票率)) +
-  geom_ribbon(data = ribbon2, aes(x = 支持率, ymin = lwr, ymax = upr),
-              fill = "#AED6F1", alpha = 0.25, inherit.aes = FALSE) +
-  geom_line(data = ribbon2, aes(x = 支持率, y = fit),
-            color = "#2C5F7A", linewidth = 1.1, linetype = "dashed",
-            inherit.aes = FALSE) +
-  geom_hline(yintercept = pi_upper, linetype = "dotted",
-             color = "#E07B00", linewidth = 0.9) +
-  annotate("text", x = 0.18, y = pi_upper * 1.12,
-           label = sprintf("95%%予測区間 上限（支持率3.4%%時）\n→ %.1f%%", pi_upper),
-           hjust = 0, size = 3.2, color = "#E07B00") +
-  geom_point(data = filter(plot_df, type == "参照政党"),
-             aes(color = type), size = 4.5, shape = 16, alpha = 0.85) +
-  geom_point(data = filter(plot_df, type == "みらい（実際）"),
-             aes(color = type), size = 6, shape = 18) +
-  geom_point(data = filter(plot_df, type == "仮定"),
-             aes(color = type), size = 6, shape = 15) +
-  ggrepel::geom_text_repel(data = filter(plot_df, type != "仮定"),
-                            aes(label = 政党), size = 3.3,
-                            color = "#2C3E50", max.overlaps = 15) +
-  ggrepel::geom_text_repel(data = filter(plot_df, type == "仮定"),
-                            aes(label = 政党), size = 3.5,
-                            color = "#8B3A00", fontface = "bold", max.overlaps = 10) +
-  scale_color_manual(
-    values = c("参照政党" = "#5D8AA8", "みらい（実際）" = "#E74C3C", "仮定" = "#E07B00"),
-    name = NULL
-  ) +
-  scale_x_log10(labels = function(x) paste0(x, "%"),
-                breaks = c(0.2, 0.5, 1, 2, 5, 10, 20)) +
-  scale_y_log10(labels = function(x) paste0(x, "%"),
-                breaks = c(1, 2, 5, 10, 20, 30, 50)) +
-  labs(title = "「参政党（仮定）」は回帰モデルの予測区間に収まるか？",
-       subtitle = "帯＝95%予測区間（チームみらい除く8政党ベース）　■＝仮定参政党　◆＝みらい実際値",
-       x = "時事通信 支持率（%、対数軸）", y = "東京 平均得票率（%、対数軸）") +
-  theme_minimal(base_size = 13) +
-  theme(plot.title      = element_text(face = "bold"),
-        plot.subtitle   = element_text(color = "#555555"),
-        panel.grid.minor = element_blank(),
-        legend.position  = "top")
-```
-
-```{r transfer_pvalue}
-# z スコアと p 値（対数スケール）
-log_pred_mean <- predict(ols_ref, newdata = data.frame(支持率 = 3.4))
-log_pred_se   <- predict(ols_ref, newdata = data.frame(支持率 = 3.4),
-                          se.fit = TRUE)$se.fit
-sigma_ols     <- sigma(ols_ref)
-se_pred       <- sqrt(sigma_ols^2 + log_pred_se^2)
-
-z_hypo        <- (log(sansei_hypo_mean)  - log_pred_mean) / se_pred
-z_act_sansei  <- (log(actual_sansei_mean) - log_pred_mean) / se_pred
-p_hypo_upper  <- 1 - pnorm(z_hypo)
-p_act_upper   <- 1 - pnorm(z_act_sansei)
-
-# チームみらい（参考）
-mirai_mean_val <- filter(merged, is_mirai) %>% pull(東京平均得票率)
-log_pred_m0    <- predict(ols_ref, newdata = data.frame(支持率 = 0.2))
-log_pred_se0   <- predict(ols_ref, newdata = data.frame(支持率 = 0.2),
-                           se.fit = TRUE)$se.fit
-se_pred0       <- sqrt(sigma_ols^2 + log_pred_se0^2)
-z_mirai_val    <- (log(mirai_mean_val) - log_pred_m0) / se_pred0
-p_mirai_val    <- 1 - pnorm(z_mirai_val)
-
-tibble(
-  シナリオ       = c(
-    "参政党（実際：支持率3.4%）",
-    sprintf("参政党（仮定：90%%移転後 → %.1f%%）", sansei_hypo_mean),
-    "チームみらい（参考：支持率0.2%）"
-  ),
-  東京平均得票率 = c(actual_sansei_mean, sansei_hypo_mean, mirai_mean_val),
-  zスコア        = c(z_act_sansei, z_hypo, z_mirai_val),
-  片側p値        = c(p_act_upper, p_hypo_upper, p_mirai_val),
-  判定           = c(
-    ifelse(p_act_upper   < 0.05, "異常（p<0.05）", "正常範囲"),
-    ifelse(p_hypo_upper  < 0.05, "異常（p<0.05）", "正常範囲"),
-    ifelse(p_mirai_val   < 0.05, "異常（p<0.05）", "正常範囲")
-  )
-) %>%
-  mutate(
-    東京平均得票率 = sprintf("%.2f%%", 東京平均得票率),
-    zスコア        = sprintf("%.2f σ",  zスコア),
-    片側p値        = sprintf("%.4f",    片側p値)
-  ) %>%
-  datatable(
-    rownames = FALSE,
-    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
-    class    = "stripe hover compact"
-  ) %>%
-  formatStyle("判定",
-    color           = styleEqual(c("異常（p<0.05）","正常範囲"), c("#C0392B","#27AE60")),
-    fontWeight      = "bold",
-    backgroundColor = styleEqual(c("異常（p<0.05）","正常範囲"), c("#FDECEA","#EAFAF1"))
-  )
-```
-
-## 7-3. 市区町村別の分布：移転前後の参政党得票率
-
-```{r transfer_city_plot, fig.height=9}
-df_transfer_long <- df_transfer %>%
-  select(市区町村, 参政率, 参政率_仮定) %>%
-  pivot_longer(-市区町村, names_to = "シナリオ", values_to = "得票率") %>%
-  mutate(
-    シナリオ = recode(シナリオ,
-      参政率      = "参政党（実際）",
-      参政率_仮定 = "参政党（仮定：+90%移転）"
-    ),
-    市区町村 = fct_reorder(
-      市区町村,
-      ifelse(シナリオ == "参政党（仮定：+90%移転）", 得票率, NA_real_),
-      .fun = function(x) mean(x, na.rm = TRUE)
-    )
-  )
-
-ggplot(df_transfer_long, aes(x = 得票率, y = 市区町村, color = シナリオ, shape = シナリオ)) +
-  annotate("rect", xmin = pi_lower, xmax = pi_upper,
-           ymin = -Inf, ymax = Inf, fill = "#AED6F1", alpha = 0.20) +
-  annotate("text", x = (pi_lower + pi_upper) / 2, y = Inf,
-           label = sprintf("95%%予測区間\n（支持率3.4%%）\n%.1f%%〜%.1f%%", pi_lower, pi_upper),
-           vjust = 1.3, size = 2.8, color = "#2C5F7A") +
-  geom_vline(xintercept = pi_upper, linetype = "dashed",
-             color = "#2C5F7A", linewidth = 0.7) +
-  geom_line(aes(group = 市区町村), color = "#CCCCCC", linewidth = 0.5) +
-  geom_point(size = 3, alpha = 0.9) +
-  scale_color_manual(values = c("参政党（実際）"          = "#5D8AA8",
-                                 "参政党（仮定：+90%移転）" = "#E07B00"),
-                     name = NULL) +
-  scale_shape_manual(values = c("参政党（実際）"          = 16,
-                                 "参政党（仮定：+90%移転）" = 15),
-                     name = NULL) +
-  scale_x_continuous(labels = function(x) paste0(x, "%")) +
-  labs(title    = "市区町村別：参政党の得票率（実際 vs 仮定）",
-       subtitle = "青帯＝95%予測区間（支持率3.4%時）　■が帯の右端を超えれば統計的に異常な水準",
-       x = "得票率（%）", y = NULL) +
-  theme_minimal(base_size = 11) +
-  theme(plot.title         = element_text(face = "bold"),
-        plot.subtitle      = element_text(color = "#555555", size = 9.5),
-        legend.position    = "top",
-        panel.grid.major.y = element_blank(),
-        panel.grid.minor   = element_blank())
-```
-
-## 7-4. 結論：90%移転仮説の統計的判定
-
-```{r transfer_conclusion}
-pct_above_pi <- mean(df_transfer$参政率_仮定 > pi_upper, na.rm = TRUE) * 100
-
-tibble(
-  項目 = c(
-    "仮定後 参政党 東京平均得票率",
-    "世論調査支持率（3.4%）に対する倍率",
-    "回帰モデル 95%予測区間（支持率3.4%）",
-    "z スコア（対数モデル）",
-    "片側 p 値",
-    "95%予測区間を超える市区町村の割合",
-    "統計的判定"
-  ),
-  値 = c(
-    sprintf("%.1f%%（実際の参政党は %.1f%%）", sansei_hypo_mean, actual_sansei_mean),
-    sprintf("× %.1f（実際の参政党は × %.1f）", sansei_hypo_mean / 3.4, actual_sansei_mean / 3.4),
-    sprintf("%.1f%% 〜 %.1f%%", pi_lower, pi_upper),
-    sprintf("%.2f σ", z_hypo),
-    sprintf("p = %.4f", p_hypo_upper),
-    sprintf("%.0f%% の市区町村が上限を超過", pct_above_pi),
-    ifelse(p_hypo_upper < 0.05,
-           "❌ 統計的に異常（p < 0.05）",
-           "✅ 統計的に正常範囲内")
-  )
-) %>%
-  datatable(
-    rownames = FALSE,
-    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
-    class    = "stripe hover compact"
-  ) %>%
-  formatStyle("項目", fontWeight = "bold") %>%
-  formatStyle("値",
-    backgroundColor = styleEqual(
-      c("❌ 統計的に異常（p < 0.05）", "✅ 統計的に正常範囲内"),
-      c("#FDECEA", "#EAFAF1")
-    )
-  )
-```
-
-<div class="callout-result">
-**仮説検定の結論**
-
-「チームみらいの得票の90%が参政党に流れた」と仮定した場合、
-参政党の東京得票率は **`r sprintf("%.1f%%", sansei_hypo_mean)`** となります。
-
-この値は世論調査支持率3.4%に対して **`r sprintf("× %.1f倍", sansei_hypo_mean/3.4)`** であり、
-回帰モデルが予測する95%区間（`r sprintf("%.1f%%〜%.1f%%", pi_lower, pi_upper)`）と比較すると
-
-- z スコア = **`r sprintf("%.2f", z_hypo)` σ**
-- 片側 p 値 = **`r sprintf("%.4f", p_hypo_upper)`**
-
-`r if(p_hypo_upper < 0.05) "**90%移転後の参政党票数も統計的に異常** です。移転先の参政党にとっても「その規模の票は来ないはず」という別の異常が生じるため、単純な参政党への票移転では矛盾が解消しません。" else "90%移転後の参政党票数は統計的に説明可能な範囲に収まります。ただし、これは「参政党の規模として不自然ではない」という意味に過ぎず、実際に移転があった証拠にはなりません。"`
-</div>
-
----
-
-# 8. 拡張仮説：みらい票90%を「参政・保守・れいわ・減税」に按分した場合 {.tabset}
+# 7. 拡張仮説：みらい票90%を「参政・保守・れいわ・減税」に按分した場合 {.tabset}
 
 <div class="callout-box">
 **仮説の設定**
@@ -2222,7 +1897,7 @@ tibble(
 の2点を同じ回帰モデルで検定します。
 </div>
 
-## 8-1. 市区町村別 按分計算
+## 7-1. 市区町村別 按分計算
 
 ```{r dist4_calc}
 dist_parties  <- c("参政党", "日本保守党", "れいわ新選組", "減税日本・ゆうこく連合")
@@ -2325,7 +2000,7 @@ summary4 %>%
 最大受取党は**`r filter(summary4, 政党!="チームみらい") %>% slice_max(率_仮定, n=1) %>% pull(政党)`**で **`r filter(summary4, 政党!="チームみらい") %>% slice_max(率_仮定, n=1) %>% pull(率_仮定) %>% sprintf("%.1f%%", .)`** となります。
 </div>
 
-## 8-2. 回帰モデルによる各党の妥当性検定
+## 7-2. 回帰モデルによる各党の妥当性検定
 
 ```{r dist4_regression}
 # 各党の加重平均得票率（仮定後）
@@ -2408,7 +2083,7 @@ stat_tbl4 %>%
   )
 ```
 
-## 8-3. 散布図：全党の実際 → 仮定の移動
+## 7-3. 散布図：全党の実際 → 仮定の移動
 
 ```{r dist4_scatter, fig.height=7}
 party_colors5 <- c(
@@ -2485,7 +2160,7 @@ ggplot() +
         panel.grid.minor = element_blank())
 ```
 
-## 8-4. 市区町村別：5党の変化ドット
+## 7-4. 市区町村別：5党の変化ドット
 
 ```{r dist4_city, fig.height=10, fig.width=12}
 rate_cols_act4  <- c("得票率_mirai"="チームみらい","得票率_sansei"="参政党",
@@ -2554,7 +2229,7 @@ ggplot(dist4_long, aes(x = 得票率, y = 市区町村,
         strip.text         = element_text(face = "bold", size = 10))
 ```
 
-## 8-5. 総括：5党すべての統計的判定
+## 7-5. 総括：5党すべての統計的判定
 
 ```{r dist4_summary}
 final4 <- stat_tbl4 %>%
