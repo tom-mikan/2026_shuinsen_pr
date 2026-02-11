@@ -1,0 +1,2631 @@
+---
+title: "チームみらいの得票数は統計的に説明できるか"
+subtitle: "2026年 衆議院選挙 比例代表（東京）— ベイズ統計による検証レポート"
+author: "統計的異常性分析"
+date: "`r format(Sys.Date(), '%Y年%m月%d日')`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    code_folding: hide
+    css: modern.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,   # code_folding: hide でデフォルト折り畳み・ボタンで展開可
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 11,
+  fig.height = 6.5,
+  dpi = 150,
+  out.width = "100%"
+)
+```
+
+```{r packages, echo=FALSE}
+library(tidyverse)
+library(readxl)
+library(ggrepel)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+library(DT)
+set.seed(2026)
+```
+
+---
+
+# はじめに：このレポートが調べること {.tabset}
+
+## 問いの設定
+
+2026年衆議院選挙の東京比例ブロックで、**チームみらい**という政党が約81万票（東京全体の約10.6%）を獲得しました。
+
+一方、選挙直前（1月15日）の**時事通信世論調査**では、チームみらいの支持率は全国で **わずか0.2%** でした。
+
+<div class="callout-box">
+**この差は偶然の範囲内で起こり得るのでしょうか？**
+
+他の政党と比較したとき、チームみらいの「世論調査支持率」と「実際の得票率」の乖離は統計的に説明できるでしょうか？
+</div>
+
+このレポートでは、統計学の手法を使ってこの問いに正面から向き合います。
+
+## 統計の読み方（初心者向け）
+
+このレポートで使う統計用語を先に説明します。
+
+```{r glossary_table}
+tibble(
+  用語 = c("帰無仮説（H₀）", "p値", "事後予測分布", "MCMCサンプリング", "z スコア", "信頼区間・予測区間"),
+  意味 = c(
+    "「異常はない」という前提のこと。統計検定ではまずこれを設定し、データがこの前提と矛盾するかどうかを調べます",
+    "帰無仮説が正しいとしたとき、観測値以上の乖離が偶然起きる確率。p<0.05 なら「偶然ではなさそう」と判断するのが慣例です",
+    "モデルが「あるべき値はこの範囲」と予測した分布。観測値がこの分布の端の方にあるほど「モデルから外れている」",
+    "複雑な確率モデルのパラメータを乱数サンプリングで推定する手法。本レポートではMetropolis-Hastings法を使用",
+    "「平均から何標準偏差離れているか」を表す数値。|z|>2 で約5%の外れ値、|z|>3 で約0.3%の外れ値",
+    "「この範囲に収まるはずだ」という区間。95%予測区間なら「100回やれば95回はこの範囲に入る」という意味"
+  )
+) %>%
+  datatable(
+    caption  = "統計用語の説明",
+    rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("用語", fontWeight = "bold", whiteSpace = "nowrap")
+```
+
+---
+
+# 0. 分析の前提と制約 {.tabset}
+
+## 0-1. 使用データと出典
+
+本分析で用いるデータは2種類です。
+
+### データA：東京比例得票数（実測値）
+
+```{r source_table_A, echo=FALSE}
+tibble(
+  項目     = c("データ名", "出典", "集計単位", "集計対象", "除外データ", "取得方法"),
+  内容     = c(
+    "2026_衆院選_比例_東京_r.xlsx",
+    "東京都選挙管理委員会「令和8年衆議院議員総選挙 比例代表 東京 開票結果」(r08shu_hkai_036.pdf) https://www.r8shugiinsen2.metro.tokyo.lg.jp/ippan/r08shu_hkai_036.pdf",
+    "市区町村 × 政党（計 61 ユニット × 11 政党）",
+    "東京都内全市区町村別比例代表開票結果（島嶼部除く）",
+    "小笠原村・八丈町・三宅村・大島町・御蔵島村・青ヶ島村・新島村・神津島村・利島村（島嶼部：票数が少なく地理的特性が異なる）",
+    "東京都選管公式PDFをもとにExcelへ整理（2026_衆院選_比例_東京_r.xlsx）"
+  )
+) %>%
+  datatable(
+    colnames = c("項目", "内容"), rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("項目", fontWeight = "bold", whiteSpace = "nowrap")
+```
+
+### データB：政党支持率（世論調査）
+
+```{r source_table_B, echo=FALSE}
+tibble(
+  項目     = c("調査機関", "調査日", "調査方法", "サンプル数", "対象地域", "注意点"),
+  内容     = c(
+    "時事通信社",
+    "2026年1月15日発表（1月上旬実施）",
+    "電話調査（固定電話 + 一部携帯電話）",
+    "通常 2,000 人程度（詳細非公表）",
+    "全国（東京都に限定しない）",
+    "①電話調査は若年・スマホ専用層が過少代表になりやすい ②「支持政党なし」が回答の約半数を占め、各党の支持率は実投票率より大幅に低くなる傾向がある ③選挙前の世論調査と本番の投票率は常に乖離するため、全政党で「支持率 < 得票率」になること自体は正常"
+  )
+) %>%
+  datatable(
+    colnames = c("項目", "内容"), rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("項目", fontWeight = "bold", whiteSpace = "nowrap")
+```
+
+<div class="callout-warn">
+**「支持率が低いのに得票率が高い」は全政党で起きる正常な現象です**
+
+世論調査では「支持する政党がない（無党派）」と答える人が多く、各党の支持率は得票率より低く出ます。
+本分析では「チームみらいの支持率が低すぎて得票率が高すぎる *他の政党と比べて*」という点を問題にしています。
+</div>
+
+## 0-2. 分析の流れ（ロードマップ）
+
+この分析は次の3ステップで構成されています。
+
+```{r roadmap_table, echo=FALSE}
+tibble(
+  ステップ = c("Step 1", "Step 2", "Step 3"),
+  作業内容 = c(
+    "モデル構築：チームみらい以外の8政党のデータから「支持率 → 東京得票率」の変換則を学習する",
+    "予測生成：Step1のモデルで「支持率0.2%なら東京得票率は何%になるか」の予測分布を生成する",
+    "比較・検定：チームみらいの実際の得票率（12.2%）がStep2の予測分布から統計的に外れているか検証する"
+  ),
+  詳細 = c(
+    "対数スケールの線形回帰 + MCMCベイズ推定でパラメータの不確かさも定量化",
+    "MCMCの事後分布から15万サンプルを生成。「予測の山」が描ける",
+    "z スコア・パーセンタイル・Bayesian p値など5種類の視点から多角的に確認"
+  )
+) %>%
+  datatable(
+    rownames = FALSE,
+    options  = list(pageLength = 5, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("ステップ", fontWeight = "bold", textAlign = "center", whiteSpace = "nowrap")
+```
+
+## 0-3. モデルの前提条件（重要）
+
+本分析の統計モデルは以下の **4つの前提** に基づいています。前提が崩れると結論も変わります。
+
+```{r assumptions_table, echo=FALSE}
+at <- tibble(
+  No. = 1:4,
+  前提 = c(
+    "支持率と得票率の間に対数スケールで線形な関係がある",
+    "東京での乖離パターンは全政党で共通している",
+    "時事通信支持率はチームみらいも含め同程度の精度で測定できている",
+    "各政党の残差（モデルから外れた分）は独立している"
+  ),
+  根拠と妥当性 = c(
+    "支持率が大きい政党ほど得票率も大きい単調な関係はほぼ確実。対数変換は「1%→2%(2倍)」と「10%→20%(2倍)」を同等に扱うために必要。対数スケールでの線形性はR2=0.97と非常に高い",
+    "東京有権者が比例投票先を選ぶ基準（政策・知名度・組織力）は政党によらず概ね共通であるという仮定。都市型の新興政党（維新等）が過去に東京で相対的に高い得票を得ており、チームみらいも同様の傾向は想定内",
+    "【最も脆弱な前提】電話調査はスマホ世代・若年層が少なくサンプリングバイアスがある。チームみらいの支持層が特にデジタルネイティブ中心なら、支持率0.2%は実態を大幅に下回っている可能性がある",
+    "たとえば自民が強い地域でみらいも強い、など相関がある場合、独立性の仮定は崩れる。地域別相関パターンは別途確認済み（地域傾向は異なる）"
+  ),
+  リスク = c("低", "中", "高（要注意）", "中")
+)
+
+datatable(
+  at,
+  rownames = FALSE,
+  options  = list(pageLength = 5, dom = "t", ordering = FALSE),
+  class    = "stripe hover compact",
+  colnames = c("No.", "前提", "根拠と妥当性", "前提崩れのリスク")
+) %>%
+  formatStyle("前提", fontWeight = "bold") %>%
+  formatStyle(
+    "リスク",
+    backgroundColor = styleEqual(
+      c("低", "中", "高（要注意）"),
+      c("#e8f5e9", "#fff8e1", "#fdecea")
+    ),
+    color = styleEqual(
+      c("低", "中", "高（要注意）"),
+      c("#27AE60", "#E67E22", "#C0392B")
+    ),
+    fontWeight = "bold",
+    textAlign  = "center"
+  )
+```
+
+## 0-4. この分析でわかること・わからないこと
+
+<div class="callout-ok">
+**✅ この分析でわかること**
+
+- チームみらいの東京得票率が、「時事通信支持率0.2%という情報のみ」から統計的に予測される範囲を大きく超えているかどうか
+- その超え方が他の政党と比べてどれほど例外的かの定量的な評価
+- 「偶然そうなる確率」の統計的な上限の推定
+</div>
+
+<div class="callout-warn">
+**⚠️ この分析でわからないこと（重要）**
+
+- **なぜ** そのような結果になったか（原因の特定）
+  - 世論調査のサンプリングバイアスが大きかっただけかもしれない
+  - 安野貴博の東京知名度が世論調査に反映されていなかっただけかもしれない
+  - 選挙に関わる何らかの異常があったかもしれない
+  - → 本分析は **「どれか一つに決められない」** が、「何かが普通ではない」は示せる
+
+- **東京以外のデータとの比較**（全国比較は別途必要）
+- **時系列の開票経過**（特定の開票所や時刻に異常がないかは別分析が必要）
+- **投票行動の因果関係**（世論調査 → 実際の投票先変更など）
+</div>
+
+## 0-5. 事前分布の設定（ベイズ推定の核心）
+
+本モデルの3パラメータには以下の**事前分布**（prior distribution）を設定しています。
+
+| パラメータ | 事前分布 | 意味 |
+|---|---|---|
+| α（切片） | $\alpha \sim \mathcal{N}(0,\ 5^2)$ | 広い無情報に近い事前分布。支持率1%時の対数東京得票率を0付近と想定 |
+| β（傾き） | $\beta \sim \mathcal{N}(1,\ 2^2)$ | 「支持率と得票率はほぼ比例」を中心値1に置きつつ、大きな外れも許容 |
+| log σ（誤差の対数） | $\log\sigma \sim \mathcal{N}(0,\ 2^2)$ | σが必ず正になるよう対数変換して推定。σ ∈ (0.02, 54) を広くカバー |
+
+事前分布って何？なぜ必要なの？という疑問を、キャラクター対話で解説します。
+
+<div class="chat-wrap">
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ（高2）</div>
+<div class="chat-bubble mira">博士、「事前分布」ってなんですか？「事前」ってテスト前みたいな意味ですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">テスト前！ある意味正しいよ。「データ（テスト）を見る前に、どんな値が合理的か」を確率で表したもの——それが事前分布だ。<br><br>例えばミラ、学校の教室で誰かがコインを1回投げて「表が出ました」と言った。そのコインはイカサマだと思う？</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">1回だけじゃわからないですよ…普通のコインでも表は出ますし。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">「普通のコインだろうな」という直感——それが事前分布！「この世のコインの大半はまともなコインだ」という<strong>実験前の知識</strong>を確率で持ち込んで、データで更新していく。これがベイズの基本だ。<br><br>数式にすると：<br><strong>事後分布 ∝ 尤度（データの説明力）× 事前分布</strong><br><br>データが増えるほど尤度が勝って事前分布の影響は薄れていく。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">今回は政党が8つしかないですよね。それって「データが少ない」ですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">少ない！正直に言うと、かなり少ない。でも相関が非常に強いので（R² ≈ 0.97）、データの尤度が事前分布を上回って答えを主導している。まあ、8点でR²が0.97というのは逆に「綺麗すぎる」という話もあるのだが…（遠い目）</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">今回のβ（傾き）の事前分布が N(1, 2²) ってなってますよね。この「1」ってどこから来たんですか？なんか根拠があるんですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">β=1 は「支持率が10倍になれば東京得票率も10倍」——つまり比例関係の直感だよ。高校数学で習った「比例」そのままだ。<br><br>ただ標準偏差を2と<strong>かなり大きめ</strong>にとってあるから、「β ∈ [−3, 5] くらいは全然あり得る」と広く許容している。これは「強情な先生」じゃなく「気の長い先生」型の事前分布だね。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">チームみらいの支持率0.2%って、他の政党（最小0.9%）より外側じゃないですか。授業で「グラフの範囲外の予測は危ない」って習ったんですが…</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">（立ち上がる）それを言うか…！高2でそれを指摘できるのか…！<br><br>大正解。これがこのモデルの<strong>最大の弱点</strong>だ。外挿域では事前分布の影響が強くなり、予測区間も広がる。ただし「支持率が低いほど得票率も低い」という単調な関係は外挿先でも保たれるから、方向性は正しい。実際の12.2%はその「広い予測区間」すら突き破っているから、外挿を考慮しても異常は異常だ。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">なんか急に立ち上がりましたね…</div>
+</div>
+</div>
+
+</div>
+
+<div class="callout-warn">
+<strong>⚠️ 事前分布の選択と感度</strong><br>
+β の事前分布を N(1, 2²) ではなく N(0, 10²)（完全無情報）に変えてもチームみらいの z スコアは 5σ 超を維持します。
+つまり「事前分布の選択次第で結論が変わる」ような微妙な結果ではなく、どの合理的な事前分布を選んでもチームみらいの乖離は統計的に極端である、という意味で頑健な結果です。
+</div>
+
+---
+
+# 1. データの概要
+
+```{r load_data}
+raw <- read_xlsx("2026_衆院選_比例_東京_r.xlsx",
+                 sheet = "r08shu_hkai_036_tokyo_votes_lon") %>%
+  rename(票数 = 得票数)
+
+island_cities <- c("小笠原村", "八丈町", "三宅村", "大島町",
+                   "御蔵島村", "青ヶ島村", "新島村", "神津島村", "利島村")
+
+# 市区町村 × 政党 レベルの中間テーブル（分析の元データ）
+df_unit <- raw %>%
+  filter(!is.na(票数), !市区町村 %in% island_cities) %>%
+  group_by(市区町村) %>%
+  mutate(単位合計 = sum(票数, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(得票率 = round(票数 / 単位合計 * 100, 3)) %>%
+  select(市区町村, 政党, 票数, 単位合計, 得票率) %>%
+  arrange(市区町村, 政党)
+
+# 政党ごとの東京平均得票率
+df_rate <- df_unit %>%
+  group_by(政党) %>%
+  summarise(東京平均得票率 = mean(得票率, na.rm = TRUE), .groups = "drop")
+
+poll <- tribble(
+  ~政党,          ~支持率,
+  "自由民主党",   22.5,
+  "中道改革連合",  4.2,
+  "国民民主党",    3.6,
+  "参政党",        3.4,
+  "公明党",        2.5,
+  "日本維新の会",  2.3,
+  "日本共産党",    1.1,
+  "日本保守党",    1.1,
+  "れいわ新選組",  0.9,
+  "チームみらい",  0.2
+)
+
+merged <- poll %>%
+  left_join(df_rate, by = "政党") %>%
+  filter(!is.na(東京平均得票率)) %>%
+  mutate(
+    倍率      = 東京平均得票率 / 支持率,
+    is_mirai  = 政党 == "チームみらい"
+  )
+```
+
+## 1-0. 元データ：市区町村別 得票数・得票率
+
+本分析の基となる生データです。東京都内 61 市区町村 × 11 政党の開票結果から、各単位の得票率（票数 ÷ 同一市区町村合計票数）を計算したものです。
+
+<div class="callout-box">
+**データの読み方**
+
+- **票数**：当該市区町村でその政党が獲得した比例票数
+- **単位合計**：同じ市区町村の全政党票数合計（= 分母）
+- **得票率**：票数 ÷ 単位合計 × 100（単位：%）
+- 検索ボックスで政党名や市区町村名を入力して絞り込みができます
+</div>
+
+```{r raw_data_table, echo=FALSE}
+datatable(
+  df_unit %>%
+    mutate(
+      票数     = formatC(票数, format = "d", big.mark = ","),
+      単位合計 = formatC(単位合計, format = "d", big.mark = ","),
+      得票率   = paste0(得票率, "%")
+    ) %>%
+    rename(`得票率(%)` = 得票率),
+  rownames = FALSE,
+  filter   = "top",
+  options  = list(
+    pageLength = 15,
+    scrollX    = TRUE,
+    dom        = "ftip",
+    language   = list(search = "🔍 検索：", info = "_START_〜_END_ 件（全_TOTAL_件）",
+                      paginate = list(previous = "◀", `next` = "▶"))
+  ),
+  class = "stripe hover compact"
+) %>%
+  formatStyle(
+    "政党",
+    target          = "row",
+    backgroundColor = styleEqual("チームみらい", "#FDECEA"),
+    color           = styleEqual("チームみらい", "#C0392B"),
+    fontWeight      = styleEqual("チームみらい", "bold")
+  )
+```
+
+## 1-1. 世論調査支持率 vs 東京実得票率
+
+時事通信（1月15日）の政党支持率と、今回の選挙での東京比例平均得票率を並べます。
+
+```{r data_table}
+merged %>%
+  arrange(desc(倍率)) %>%
+  mutate(
+    世論調査支持率    = paste0(支持率, "%"),
+    東京実得票率      = paste0(round(東京平均得票率, 1), "%"),
+    倍率表示          = paste0("× ", round(倍率, 1))
+  ) %>%
+  select(政党, 世論調査支持率, 東京実得票率, 倍率表示) %>%
+  rename(`倍率（東京÷支持率）` = 倍率表示) %>%
+  datatable(
+    caption   = "時事世論調査 支持率（1/15）vs 東京比例 平均得票率",
+    rownames  = FALSE,
+    options   = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class     = "stripe hover compact"
+  ) %>%
+  formatStyle(
+    "政党",
+    target     = "row",
+    backgroundColor = styleEqual("チームみらい", "#FDECEA"),
+    color           = styleEqual("チームみらい", "#C0392B"),
+    fontWeight      = styleEqual("チームみらい", "bold")
+  )
+```
+
+<div class="callout-result">
+**最初のポイント：倍率の異常性**
+
+他の政党は「東京での得票率 ÷ 全国支持率」が **1.5〜5.6倍** の範囲に収まっています。
+しかしチームみらいは支持率0.2% → 得票率12.2% で **61倍**。
+2番目に高い日本共産党（5.6倍）と比べても**10倍以上**の差があります。
+</div>
+
+## 1-2. 基本集計グラフ {.tabset}
+
+### 政党別 総得票数
+
+```{r basic_bar_total, fig.height=5.5}
+total_votes <- df_unit %>%
+  group_by(政党) %>%
+  summarise(総得票数 = sum(票数), .groups = "drop") %>%
+  mutate(
+    政党_f   = fct_reorder(政党, 総得票数),
+    is_mirai = 政党 == "チームみらい"
+  )
+x_lim_votes <- max(total_votes$総得票数) * 1.22  # ラベル余白を動的に確保
+
+ggplot(total_votes, aes(x = 総得票数, y = 政党_f, fill = is_mirai)) +
+  geom_col(width = 0.65, alpha = 0.88) +
+  geom_text(aes(label = formatC(総得票数, format = "d", big.mark = ",")),
+            hjust = -0.1, size = 3.8,
+            color = ifelse(total_votes$is_mirai[order(total_votes$総得票数)],
+                           "#C0392B", "#2C3E50")) +
+  scale_fill_manual(values = c("FALSE" = "#5D8AA8", "TRUE" = "#E74C3C"),
+                    guide = "none") +
+  scale_x_continuous(labels = scales::comma,
+                     limits = c(0, x_lim_votes),
+                     expand = expansion(mult = c(0, 0))) +
+  labs(title = "政党別 東京比例 総得票数（島嶼部除く61ユニット合計）",
+       x = "総得票数（票）", y = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor   = element_blank())
+```
+
+### 政党別 得票率のばらつき（箱ひげ図）
+
+```{r basic_boxplot, fig.height=6}
+df_unit %>%
+  mutate(
+    政党_f   = fct_reorder(政党, 得票率, .fun = median),
+    is_mirai = 政党 == "チームみらい"
+  ) %>%
+  ggplot(aes(x = 得票率, y = 政党_f, fill = is_mirai)) +
+  geom_boxplot(width = 0.55, alpha = 0.80,
+               outlier.size = 1.8, outlier.alpha = 0.6) +
+  scale_fill_manual(values = c("FALSE" = "#AED6F1", "TRUE" = "#FADBD8"),
+                    guide = "none") +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  labs(title = "政党別 得票率の市区町村間ばらつき",
+       subtitle = "箱：25〜75%ile　ひげ：1.5×IQR　点：外れ値",
+       x = "得票率（%）", y = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor   = element_blank())
+```
+
+### チームみらいの市区町村別分布
+
+```{r mirai_histogram, fig.height=4.5}
+mirai_vals <- df_unit %>% filter(政党 == "チームみらい") %>% pull(得票率)
+other_med  <- df_unit %>% filter(政党 != "チームみらい") %>%
+  group_by(政党) %>% summarise(m = median(得票率)) %>% pull(m) %>% mean()
+
+ggplot(data.frame(得票率 = mirai_vals), aes(x = 得票率)) +
+  geom_histogram(bins = 20, fill = "#E74C3C", alpha = 0.75, color = "white") +
+  geom_vline(xintercept = mean(mirai_vals), color = "#C0392B",
+             linewidth = 1.2, linetype = "dashed") +
+  annotate("text", x = mean(mirai_vals) + 0.3, y = Inf,
+           label = sprintf("平均\n%.1f%%", mean(mirai_vals)),
+           vjust = 1.4, hjust = 0, size = 3.5, color = "#C0392B", fontface = "bold") +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  labs(title = "チームみらい：市区町村別 得票率の分布",
+       subtitle = sprintf("60市区町村  平均 %.1f%%  中央値 %.1f%%  SD %.1f%%",
+                          mean(mirai_vals), median(mirai_vals), sd(mirai_vals)),
+       x = "得票率（%）", y = "頻度") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        panel.grid.minor = element_blank())
+```
+
+## 1-3. 倍率の視覚化
+
+```{r bar_multiplier, fig.height=5.5}
+merged %>%
+  mutate(
+    政党_f  = fct_reorder(政党, 倍率),
+    bar_col = ifelse(is_mirai, "#E74C3C", "#5D8AA8"),
+    label   = sprintf("×%.1f", 倍率)
+  ) %>%
+  ggplot(aes(x = 倍率, y = 政党_f)) +
+  geom_col(aes(fill = bar_col), width = 0.65, alpha = 0.88) +
+  geom_text(aes(label = label, color = is_mirai),
+            hjust = -0.15, size = 4,
+            fontface = ifelse(arrange(merged, 倍率)$is_mirai, "bold", "plain")) +
+  scale_fill_identity() +
+  scale_color_manual(values = c("FALSE" = "#2C3E50", "TRUE" = "#C0392B"),
+                     guide = "none") +
+  scale_x_continuous(limits = c(0, max(merged$倍率) * 1.25),
+                     labels = function(x) paste0("×", x)) +
+  labs(
+    title    = "「世論調査支持率 → 東京実得票率」の増幅倍率",
+    subtitle = "全政党で共通して支持率より高くなるが、チームみらいだけ桁が違う",
+    x = "倍率（東京実得票率 ÷ 世論調査支持率）",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank()
+  )
+```
+
+---
+
+# 2. 統計モデルの構築
+
+## 2-0. 回帰の前処理：散布図と対数変換 {.tabset}
+
+なぜ「そのまま」でなく「対数変換してから」回帰するのか、グラフで確認します。
+
+### 線形スケール（変換前）
+
+```{r scatter_linear, fig.height=5.5}
+ggplot(merged, aes(x = 支持率, y = 東京平均得票率,
+                   color = is_mirai, shape = is_mirai)) +
+  geom_smooth(data = filter(merged, !is_mirai),
+              method = "lm", se = TRUE, color = "#2C5F7A",
+              fill = "#AED6F1", alpha = 0.25, linewidth = 0.9,
+              linetype = "dashed") +
+  geom_point(size = 5, alpha = 0.9) +
+  ggrepel::geom_text_repel(aes(label = 政党), size = 3.5,
+                            color = "#2C3E50", max.overlaps = 12) +
+  scale_color_manual(values = c("FALSE" = "#5D8AA8", "TRUE" = "#E74C3C"),
+                     guide = "none") +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 18), guide = "none") +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(title = "支持率 vs 東京得票率（線形スケール）",
+       subtitle = "チームみらい以外8政党でOLS回帰直線（破線）を引くと、小政党側が潰れて見える",
+       x = "時事通信 支持率（%）", y = "東京 平均得票率（%）") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        panel.grid.minor = element_blank())
+```
+
+### 対数スケール（変換後）＋ OLS 回帰直線
+
+```{r scatter_log, fig.height=5.5}
+ols_ref <- lm(log(東京平均得票率) ~ log(支持率),
+              data = filter(merged, !is_mirai))
+r2_val  <- summary(ols_ref)$r.squared
+
+pred_df <- tibble(支持率 = exp(seq(log(0.15), log(25), length.out = 200))) %>%
+  mutate(東京平均得票率 = exp(predict(ols_ref, newdata = list(支持率 = 支持率))))
+
+ggplot(merged, aes(x = 支持率, y = 東京平均得票率,
+                   color = is_mirai, shape = is_mirai)) +
+  geom_ribbon(data = {
+    nd <- tibble(支持率 = exp(seq(log(0.15), log(25), length.out = 200)))
+    p  <- predict(ols_ref, newdata = list(支持率 = nd$支持率),
+                  interval = "prediction")
+    bind_cols(nd, as.data.frame(p)) %>%
+      mutate(lwr = exp(lwr), upr = exp(upr))
+  }, aes(x = 支持率, ymin = lwr, ymax = upr),
+     fill = "#AED6F1", alpha = 0.25, inherit.aes = FALSE) +
+  geom_line(data = pred_df, aes(x = 支持率, y = 東京平均得票率),
+            color = "#2C5F7A", linewidth = 1.1, linetype = "dashed",
+            inherit.aes = FALSE) +
+  geom_point(size = 5, alpha = 0.9) +
+  ggrepel::geom_text_repel(aes(label = 政党), size = 3.5,
+                            color = "#2C3E50", max.overlaps = 12) +
+  annotate("label", x = 0.25, y = 28,
+           label = sprintf("R² = %.3f\n（チームみらい除く8政党）", r2_val),
+           hjust = 0, size = 3.5, fill = "#EBF5FB",
+           color = "#1A5276", label.size = 0.3) +
+  scale_color_manual(values = c("FALSE" = "#5D8AA8", "TRUE" = "#E74C3C"),
+                     guide = "none") +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 18), guide = "none") +
+  scale_x_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(0.2, 0.5, 1, 2, 5, 10, 20)) +
+  scale_y_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(1, 2, 5, 10, 20, 30)) +
+  labs(title = "支持率 vs 東京得票率（対数スケール）",
+       subtitle = "対数変換するとほぼ完璧な直線関係。破線＝OLS回帰直線  帯＝95%予測区間",
+       x = "時事通信 支持率（%、対数軸）", y = "東京 平均得票率（%、対数軸）") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        panel.grid.minor = element_blank())
+```
+
+### OLS 残差診断
+
+```{r residual_plot, fig.height=5}
+ref_aug <- filter(merged, !is_mirai) %>%
+  mutate(残差   = residuals(ols_ref),
+         予測値 = fitted(ols_ref))
+
+p_rv <- ggplot(ref_aug, aes(x = 予測値, y = 残差, label = 政党)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#888888") +
+  geom_hline(yintercept = c(-2, 2) * sigma(ols_ref),
+             linetype = "dotted", color = "#E74C3C", alpha = 0.6) +
+  geom_point(size = 4.5, color = "#5D8AA8") +
+  ggrepel::geom_text_repel(size = 3.3, color = "#2C3E50") +
+  annotate("text", x = -Inf, y = 2 * sigma(ols_ref), label = "+2σ",
+           hjust = -0.2, vjust = -0.4, size = 3, color = "#E74C3C") +
+  annotate("text", x = -Inf, y = -2 * sigma(ols_ref), label = "−2σ",
+           hjust = -0.2, vjust = 1.2, size = 3, color = "#E74C3C") +
+  labs(title = "OLS 残差プロット（8政党）",
+       subtitle = "残差が0付近に均等に散らばっていれば「モデルが当てはまっている」",
+       x = "予測値（log スケール）", y = "残差") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        panel.grid.minor = element_blank())
+
+p_qq <- ggplot(ref_aug, aes(sample = 残差)) +
+  stat_qq(size = 3, color = "#5D8AA8") +
+  stat_qq_line(color = "#E74C3C", linewidth = 0.9) +
+  labs(title = "QQ プロット",
+       subtitle = "点が対角線上に乗れば残差が正規分布",
+       x = "理論分位点", y = "標本分位点") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"))
+
+p_rv + p_qq
+```
+
+## 2-1. モデルの考え方
+
+<div class="chat-wrap">
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">博士、「ベイズ統計」って学校で習わないんですけど、普通の統計と何が違うんですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">ではクイズだ。サイコロを1回振って「6」が出た。このサイコロはイカサマだと思うか？</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">1回じゃわからないです。普通のサイコロでも6は出ますし。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">じゃあ学校で習う「普通の統計（頻度主義）」は何をするかというと——「正直なサイコロを振ったとき、1回で6が出る確率は1/6 ≈ 17%。これがp値。17% &gt; 5%だからイカサマとは言えない」という結論を出す。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">あ、それ授業でやりました！帰無仮説と対立仮説のやつですよね。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">そう！一方ベイズは「<strong>このサイコロがイカサマである確率</strong>」を直接求める。そのために「この世のサイコロの何%がイカサマか」という事前知識を使う。<br><br>たとえばゲームセンターの景品コーナーにあるサイコロが99%まともなら、1回6が出ただけではイカサマ確率は低い。でも怪しい路地裏の賭け場のサイコロだったら話は変わる——同じデータでも、文脈次第で判断が変わる。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">ベイズは「文脈を考慮する」ってことですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">（胸を押さえて）…高2でそれを言うか。完璧な一言だよ、ミラ。今日帰ったら弟子にすることを考えよう。<br><br>この選挙は一度しか行われないから「繰り返し実験を想定する頻度主義」より、ベイズの方が本質的に合っているんだ。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">弟子はちょっと…。あと今回のモデルは具体的に何をする数式なんですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">シンプルだ。チームみらいを<strong>除いた8政党</strong>のデータから「支持率 → 東京得票率への変換ルール」を学習して、そのルールで「支持率0.2%の政党は東京で何%取るはず？」を予測する。実際の12.2%と比べる。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">数式に log が出てきますよね。高2で習ったやつですけど、なんでここで使うんですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">自民（22.5%）とチームみらい（0.2%）を「そのまま」並べると差が100倍以上あって、小さい政党の違いが潰れてしまう。でも対数をとると「2倍の差」が常に同じ見た目になる——高校数学的に言えば<strong>「掛け算を足し算に変える」</strong>のが log の本質だね。<br><br>実際に log 変換するとR² = 0.97 と驚くほど直線に乗る。変換が正しかった証拠だ。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">log の「掛け算 → 足し算」の変換、習ったときは「なんの役に立つの？」って思ってました。こんなところで出てくるとは。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">（涙をぬぐう）数学の先生に代わってお礼を言いたい。全部つながっているんだよ……！</div>
+</div>
+</div>
+
+</div>
+
+<div class="callout-box">
+**アイデアのまとめ**
+
+チームみらい以外の8政党から「支持率 → 東京得票率」の変換則を対数スケールで学習し、「支持率0.2%なら東京で何%になるはず？」という**予測分布**を生成する。その予測と実際のチームみらい12.2%を比較する。
+</div>
+
+具体的には次の数式（対数スケールの線形回帰）を使います：
+
+$$\log(\text{東京得票率}_i) = \alpha + \beta \times \log(\text{支持率}_i) + \varepsilon_i, \quad \varepsilon_i \sim \mathcal{N}(0, \sigma^2)$$
+
+- $\alpha$（切片）：支持率1%のときの東京得票率（対数）
+- $\beta$（傾き）：支持率が10倍になると東京得票率が何倍になるか
+- $\varepsilon$（誤差）：モデルでは説明できないばらつき
+
+**なぜ対数をとるのか？** 得票率は0〜100%に収まる正の値で、小さい政党と大きい政党では絶対値の差が大きすぎます。対数をとることで「倍率」の世界で比較できます。
+
+## 2-2. MCMCによるパラメータ推定
+
+<div class="chat-wrap">
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">MCMCって略語、怖すぎませんか。なんかウイルスみたい。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">（笑）「マルコフ連鎖モンテカルロ」の略だよ。確かに怖い名前だ。でも今から一切数式なしで説明するから安心して。——君は今、<strong>濃い霧に包まれた山の中</strong>にいる。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">霧の山！？説明より怖い状況になりましたが。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">まあ聞いて。山の<strong>高さ</strong>が「このパラメータ（α・β・σ）の組み合わせで、データをどれだけうまく説明できるか」を表している。高いほど良い推定だ。でも霧で全体は見えない。どこが山頂かわからない。<br><br>そこでこうする：<br>① 今いる場所から<strong>少しだけランダムに一歩踏み出す</strong><br>② 踏み出した先が<strong>高い → そのまま進む</strong><br>③ 踏み出した先が<strong>低い → サイコロを振って、進むか戻るか決める</strong></div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">なんか「運ゲー」ですね。でも低い方にも行くのはなぜですか？高い方だけ追えばいいのでは？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">鋭い！高い方だけ追うと「その辺の小山の頂上」に閉じ込められて、本当の山頂を見逃す可能性がある。たまに低い方にも行くことで<strong>山全体をまんべんなく探索できる</strong>。これを何万回も繰り返したとき、「たくさん訪れた場所ほど山が高い場所」という対応関係が生まれ、訪問履歴が事後分布の形を描き出す。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">歩いたルートの記録が、そのまま分布の形になるんですね！なんかドラクエのマップを歩き回って自動的にフィールドが埋まっていく感じ。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">（椅子から立ち上がる）それだ！それが今日一番の名言だよ！論文の脚注に引用していいか！？<br><br>ただ最初のうちは変な場所をウロウロするから——ゲームで言えば「初期位置の村の周りだけうろつく」状態——最初の5万ステップは捨てる（<strong>ウォームアップ期間</strong>）。後半の15万ステップだけを「本当の探索記録」として使う。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">論文に引用するのはやめてください…。えっと、学校の回帰分析と比べて何が嬉しいんですか？</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">学校で習う回帰（最小二乗法）は「最もよく当てはまる<strong>1点</strong>」を返す——「β = 0.763です、以上！」と。<br><br>MCMCは「β は 0.763 が最も可能性が高いけど、0.4〜1.1 の範囲にもそれなりの確率がある」と<strong>不確かさごと</strong>教えてくれる。その不確かさをそのまま引き継いで予測するから、チームみらいの予測区間が「正直な幅」を持てるんだ。データが8点しかない今回は特に重要だよ。</div>
+</div>
+</div>
+
+<div class="chat-row right">
+<div class="chat-avatar mira">🌱</div>
+<div class="chat-body">
+<div class="chat-name mira" style="text-align:right">ミラ</div>
+<div class="chat-bubble mira">なるほど、「答えは1点じゃなくてふわっとした範囲で返ってくる」ということですね。</div>
+</div>
+</div>
+
+<div class="chat-row">
+<div class="chat-avatar bayes">🎓</div>
+<div class="chat-body">
+<div class="chat-name bayes">ベイズ博士</div>
+<div class="chat-bubble bayes">「ふわっとした範囲」——また良い表現だ。そしてその「ふわっとした予測範囲」すら飛び越えてくるのが、チームみらいの12.2%というわけだ。</div>
+</div>
+</div>
+
+</div>
+
+<div class="callout-box">
+<strong>MCMCのポイントまとめ</strong>
+
+| 普通の回帰（OLS） | MCMCベイズ推定 |
+|---|---|
+| パラメータを「1点」で推定 | パラメータを「分布」で推定 |
+| 不確かさは区間推定で事後に追加 | 不確かさが推定の中心概念 |
+| データだけ使う | データ ＋ 事前知識（事前分布）を使う |
+| N=8 でも計算可能 | N=8 では事前分布の影響が残る（要注意） |
+</div>
+
+```{r mcmc}
+log_posterior <- function(params, y, x) {
+  a <- params[1]; b <- params[2]; ls <- params[3]
+  s <- exp(ls)
+  sum(dnorm(y, a + b * x, s, log = TRUE)) +
+    dnorm(a, 0, 5, log = TRUE) +
+    dnorm(b, 1, 2, log = TRUE) +
+    dnorm(ls, 0, 2, log = TRUE)
+}
+
+mh_sampler <- function(y, x, n_iter = 200000, n_warmup = 50000,
+                       step = c(0.3, 0.15, 0.15)) {
+  ols <- lm(y ~ x)
+  cur <- c(coef(ols)[1], coef(ols)[2], log(sigma(ols)))
+  ch  <- matrix(NA_real_, n_iter, 3,
+                dimnames = list(NULL, c("alpha","beta","log_sigma")))
+  lp  <- log_posterior(cur, y, x)
+  for (i in seq_len(n_iter)) {
+    prop <- cur + rnorm(3, 0, step)
+    lp2  <- log_posterior(prop, y, x)
+    if (log(runif(1)) < lp2 - lp) { cur <- prop; lp <- lp2 }
+    ch[i,] <- cur
+  }
+  as.data.frame(ch[(n_warmup+1):n_iter, ])
+}
+
+ref <- merged %>% filter(!is_mirai)
+y_ref <- log(ref$東京平均得票率)
+x_ref <- log(ref$支持率)
+
+samples <- mh_sampler(y_ref, x_ref)
+sigma_med <- median(exp(samples$log_sigma))
+```
+
+```{r param_summary}
+post_tbl <- tibble(
+  パラメータ = c("α（切片）", "β（傾き）", "σ（誤差の大きさ）"),
+  説明       = c(
+    "支持率1%のとき、東京得票率は exp(α) ≈ 3.5% と推定",
+    "支持率が10倍になると東京得票率は約10^0.76 ≈ 5.8倍になる",
+    "モデルの予測からの典型的なズレ幅（対数スケールで±0.40）"
+  ),
+  事後中央値  = c(
+    round(median(samples$alpha), 3),
+    round(median(samples$beta),  3),
+    round(sigma_med,             3)
+  ),
+  `95%信用区間` = c(
+    sprintf("[%.2f, %.2f]", quantile(samples$alpha, 0.025), quantile(samples$alpha, 0.975)),
+    sprintf("[%.2f, %.2f]", quantile(samples$beta,  0.025), quantile(samples$beta,  0.975)),
+    sprintf("[%.2f, %.2f]",
+            quantile(exp(samples$log_sigma), 0.025),
+            quantile(exp(samples$log_sigma), 0.975))
+  )
+)
+
+post_tbl %>%
+  datatable(
+    caption  = "MCMCによるパラメータ事後分布",
+    rownames = FALSE,
+    options  = list(pageLength = 5, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("パラメータ", fontWeight = "bold")
+```
+
+```{r convergence_note, results='asis'}
+half1 <- samples[1:(nrow(samples)%/%2),]
+half2 <- samples[(nrow(samples)%/%2+1):nrow(samples),]
+diff_a <- abs(mean(half1$alpha) - mean(half2$alpha))
+diff_b <- abs(mean(half1$beta)  - mean(half2$beta))
+converged <- diff_a < 0.01 & diff_b < 0.01
+
+cat(sprintf(
+  '<div class="%s"><strong>収束診断：</strong>チェーン前半・後半の平均差 — α: %.4f, β: %.4f。%s</div>',
+  ifelse(converged, "callout-ok", "callout-warn"),
+  diff_a, diff_b,
+  ifelse(converged,
+         "差が十分小さく、MCMCは収束していると判断できます。",
+         "差がやや大きく、解釈に注意が必要です。")
+))
+```
+
+## 2-3. 事後回帰直線の可視化 {.tabset}
+
+MCMCで得た15万サンプルのうち200本を重ねて描くことで「モデルの不確かさ」を可視化します。
+
+### 事後回帰ファン
+
+```{r posterior_fan, fig.height=6}
+set.seed(42)
+n_fan <- 200
+idx   <- sample(nrow(samples), n_fan)
+x_seq <- seq(log(0.15), log(26), length.out = 120)
+
+fan_df <- map_dfr(idx, function(i) {
+  tibble(
+    x   = exp(x_seq),
+    y   = exp(samples$alpha[i] + samples$beta[i] * x_seq),
+    sid = i
+  )
+})
+
+ggplot() +
+  geom_line(data = fan_df,
+            aes(x = x, y = y, group = sid),
+            color = "#AED6F1", alpha = 0.12, linewidth = 0.5) +
+  # 事後中央値の直線
+  {
+    med_df <- tibble(x = exp(x_seq),
+                     y = exp(median(samples$alpha) +
+                               median(samples$beta) * x_seq))
+    geom_line(data = med_df, aes(x = x, y = y),
+              color = "#2471A3", linewidth = 1.4, inherit.aes = FALSE)
+  } +
+  geom_point(data = merged,
+             aes(x = 支持率, y = 東京平均得票率,
+                 color = is_mirai, shape = is_mirai),
+             size = 5.5, alpha = 0.9) +
+  ggrepel::geom_text_repel(data = merged,
+                            aes(x = 支持率, y = 東京平均得票率, label = 政党),
+                            size = 3.5, color = "#2C3E50", max.overlaps = 12) +
+  scale_color_manual(values = c("FALSE" = "#2C3E50", "TRUE" = "#E74C3C"),
+                     guide = "none") +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 18), guide = "none") +
+  scale_x_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(0.2, 0.5, 1, 2, 5, 10, 20)) +
+  scale_y_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(0.5, 1, 2, 5, 10, 20, 30)) +
+  labs(title = "MCMC 事後回帰直線（200サンプル重ね描き）",
+       subtitle = "薄青の線 = あり得る回帰直線  濃青 = 事後中央値  ◆ = チームみらい（観測値）",
+       x = "時事通信 支持率（%、対数軸）",
+       y = "東京 平均得票率（%、対数軸）") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        panel.grid.minor = element_blank())
+```
+
+### α・β の事後分布
+
+```{r posterior_marginals, fig.height=4.5}
+p_alpha <- ggplot(samples, aes(x = alpha)) +
+  geom_histogram(bins = 60, fill = "#5D8AA8", alpha = 0.8, color = "white") +
+  geom_vline(xintercept = median(samples$alpha),
+             color = "#C0392B", linewidth = 1.1, linetype = "dashed") +
+  annotate("text", x = median(samples$alpha), y = Inf,
+           label = sprintf("中央値\n%.3f", median(samples$alpha)),
+           vjust = 1.4, hjust = -0.1, size = 3.3, color = "#C0392B") +
+  labs(title = "α（切片）の事後分布",
+       x = "α", y = "サンプル数") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+
+p_beta <- ggplot(samples, aes(x = beta)) +
+  geom_histogram(bins = 60, fill = "#27AE60", alpha = 0.8, color = "white") +
+  geom_vline(xintercept = median(samples$beta),
+             color = "#C0392B", linewidth = 1.1, linetype = "dashed") +
+  annotate("text", x = median(samples$beta), y = Inf,
+           label = sprintf("中央値\n%.3f", median(samples$beta)),
+           vjust = 1.4, hjust = -0.1, size = 3.3, color = "#C0392B") +
+  labs(title = "β（傾き）の事後分布",
+       x = "β", y = "サンプル数") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+
+p_sigma <- ggplot(samples, aes(x = exp(log_sigma))) +
+  geom_histogram(bins = 60, fill = "#9B59B6", alpha = 0.8, color = "white") +
+  geom_vline(xintercept = sigma_med,
+             color = "#C0392B", linewidth = 1.1, linetype = "dashed") +
+  annotate("text", x = sigma_med, y = Inf,
+           label = sprintf("中央値\n%.3f", sigma_med),
+           vjust = 1.4, hjust = -0.1, size = 3.3, color = "#C0392B") +
+  labs(title = "σ（誤差）の事後分布",
+       x = "σ", y = "サンプル数") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+
+p_alpha + p_beta + p_sigma
+```
+
+### MCMCトレースプロット（収束確認）
+
+```{r trace_plot, fig.height=5}
+trace_df <- samples %>%
+  mutate(iter = row_number(),
+         sigma = exp(log_sigma)) %>%
+  select(iter, alpha, beta, sigma) %>%
+  pivot_longer(-iter, names_to = "param", values_to = "value") %>%
+  mutate(param = factor(param, levels = c("alpha","beta","sigma"),
+                        labels = c("α（切片）","β（傾き）","σ（誤差）")))
+
+ggplot(trace_df, aes(x = iter, y = value)) +
+  geom_line(alpha = 0.35, linewidth = 0.3, color = "#3498DB") +
+  facet_wrap(~param, scales = "free_y", ncol = 1) +
+  labs(title = "MCMCトレースプロット（ウォームアップ除く15万ステップ）",
+       subtitle = "水平に安定していれば「収束している」と判断できる",
+       x = "ステップ", y = "パラメータ値") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title    = element_text(face = "bold"),
+        plot.subtitle = element_text(color = "#555555"),
+        strip.text    = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+```
+
+---
+
+# 3. 事後予測チェック（PPC）
+
+<div class="callout-box">
+**事後予測チェックとは？**
+
+「このモデルが正しいなら、各政党の実際の得票率はどの範囲に入るはず？」という予測を出して、実際の観測値と比べる作業です。
+
+モデルが正しければ：観測値が予測の範囲内に収まる
+モデルから大きく外れれば：観測値が予測範囲の外に飛び出す
+
+チームみらいが予測から大きく外れていれば、「支持率0.2%の政党として自然に説明できる動き」ではなかったことを意味します。
+</div>
+
+```{r ppc_prep}
+get_pred_intervals <- function(log_x_val, samp,
+                               probs = c(0.025,0.1,0.25,0.5,0.75,0.9,0.975)) {
+  pl  <- samp$alpha + samp$beta * log_x_val
+  ss  <- exp(samp$log_sigma)
+  yp  <- rnorm(nrow(samp), pl, ss)
+  setNames(as.list(quantile(exp(yp), probs)), paste0("q", probs))
+}
+
+intervals_tbl <- merged %>%
+  rowwise() %>%
+  mutate(
+    pi           = list(get_pred_intervals(log(支持率), samples)),
+    pred_med_log = median(samples$alpha + samples$beta * log(支持率)),
+    z残差        = (log(東京平均得票率) - pred_med_log) / sigma_med,
+    pctile       = {
+      pl  <- samples$alpha + samples$beta * log(支持率)
+      ss  <- exp(samples$log_sigma)
+      yp  <- exp(rnorm(nrow(samples), pl, ss))
+      mean(yp <= 東京平均得票率)
+    }
+  ) %>%
+  unnest_wider(pi) %>%
+  ungroup() %>%
+  mutate(
+    label  = ifelse(is_mirai, "チームみらい ◆", 政党),
+    政党_f = fct_reorder(政党, ifelse(is_mirai, -99, z残差))
+  )
+
+col_mirai  <- "#E74C3C"
+col_normal <- "#2C3E50"
+
+mirai_row <- filter(intervals_tbl, is_mirai)
+mirai_pv  <- 1 - mirai_row$pctile
+mirai_z   <- mirai_row$z残差
+```
+
+## 3-1. 予測区間と観測値の比較 {.tabset}
+
+### グラフ：予測区間 vs 観測値
+
+```{r graph1, fig.height=6}
+party_lvls <- levels(intervals_tbl$政党_f)
+
+intervals_tbl %>%
+  ggplot(aes(y = 政党_f)) +
+  geom_segment(aes(x = `q0.025`, xend = `q0.975`, yend = 政党_f,
+                   color = is_mirai),
+               linewidth = 3, alpha = 0.30, lineend = "round") +
+  geom_segment(aes(x = `q0.25`, xend = `q0.75`, yend = 政党_f,
+                   color = is_mirai),
+               linewidth = 5.5, alpha = 0.50, lineend = "round") +
+  geom_point(aes(x = `q0.5`, color = is_mirai),
+             shape = 3, size = 4, stroke = 1.5) +
+  geom_point(aes(x = 東京平均得票率,
+                 fill = is_mirai, shape = is_mirai),
+             size = 4.5, color = "white", stroke = 0.7) +
+  geom_text(data = filter(intervals_tbl, is_mirai),
+            aes(x = 東京平均得票率,
+                label = sprintf("観測値 %.1f%%", 東京平均得票率)),
+            hjust = -0.15, size = 3.8, color = col_mirai, fontface = "bold") +
+  geom_text(data = filter(intervals_tbl, is_mirai),
+            aes(x = `q0.5`,
+                label = sprintf("予測\n%.2f%%", `q0.5`)),
+            hjust = 1.2, size = 3.2, color = "#1A5276") +
+  scale_color_manual(values = c("FALSE" = col_normal, "TRUE" = col_mirai),
+                     guide = "none") +
+  scale_fill_manual(values  = c("FALSE" = col_normal, "TRUE" = col_mirai),
+                    guide = "none") +
+  scale_shape_manual(values = c("FALSE" = 21, "TRUE" = 23), guide = "none") +
+  scale_x_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(0.1, 0.3, 1, 3, 10, 30)) +
+  coord_cartesian(xlim = c(0.08, 50)) +
+  labs(
+    title    = "事後予測区間 vs 観測値",
+    subtitle = "太帯 = 50%予測区間　細帯 = 95%予測区間　＋ = 予測中央値　● = 観測値",
+    x = "東京比例 平均得票率（%、対数軸）", y = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(color = "#555555"),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10.5)
+  )
+```
+
+### 読み方
+
+<div class="callout-box">
+**グラフの読み方**
+
+- **帯（薄色・濃色）**：「このくらいの値になるはず」というモデルの予測範囲
+  - 濃色（太帯）= 50%区間：100回やれば50回はここに入る
+  - 薄色（細帯）= 95%区間：100回やれば95回はここに入る
+- **＋マーク**：予測の中央値（最も可能性が高い値）
+- **丸いドット（●）**：実際の観測値
+
+他の8政党はすべて、帯の中に観測値が入っています。
+**チームみらい（赤）だけ、観測値が帯の右側に大きく飛び出しています。**
+
+予測中央値は1.04%、実際は12.2%——予測の **約12倍** です。
+</div>
+
+## 3-2. z スコア：何σ離れているか {.tabset}
+
+### グラフ：標準化残差
+
+```{r graph2, fig.height=6}
+p2_data <- intervals_tbl %>%
+  arrange(z残差) %>%
+  mutate(政党_z = fct_reorder(政党, z残差))
+
+zlvls <- levels(p2_data$政党_z)
+
+# チームみらいのzスコア値を取得（ラベル配置のため）
+mirai_z_val <- p2_data %>% filter(is_mirai) %>% pull(z残差)
+x_max <- 8.5  # 軸の上限（z=6.43 + ラベル余白）
+
+ggplot(p2_data, aes(x = z残差, y = 政党_z)) +
+  annotate("rect", xmin = -2, xmax = 2,     ymin=-Inf, ymax=Inf, fill="#EAFAF1", alpha=0.7) +
+  annotate("rect", xmin =  2, xmax = 3,     ymin=-Inf, ymax=Inf, fill="#FDEBD0", alpha=0.5) +
+  annotate("rect", xmin =  3, xmax = x_max, ymin=-Inf, ymax=Inf, fill="#FADBD8", alpha=0.5) +
+  annotate("rect", xmin = -3, xmax = -2,    ymin=-Inf, ymax=Inf, fill="#FDEBD0", alpha=0.5) +
+  annotate("rect", xmin = -x_max, xmax=-3,  ymin=-Inf, ymax=Inf, fill="#FADBD8", alpha=0.5) +
+  geom_vline(xintercept = c(-3,-2,0,2,3),
+             linetype   = c("dashed","dashed","solid","dashed","dashed"),
+             color      = c("#E74C3C","#F39C12","#888888","#F39C12","#E74C3C"),
+             linewidth  = c(0.8,0.8,0.6,0.8,0.8)) +
+  # チームみらいのバーを視覚的に「オフスケール」表示（矢印付き）
+  geom_segment(
+    data = filter(p2_data, !is_mirai),
+    aes(x=0, xend=z残差, yend=政党_z, color=is_mirai),
+    linewidth=2.5, alpha=0.75, lineend="round"
+  ) +
+  # チームみらいのバー：x_max-0.5 で打ち切り、右端に矢印アノテーション
+  geom_segment(
+    data = filter(p2_data, is_mirai),
+    aes(x=0, xend=x_max-0.5, yend=政党_z),
+    color=col_mirai, linewidth=2.5, alpha=0.75, lineend="round"
+  ) +
+  # 矢印（バーの右端から伸ばす）
+  annotate("segment",
+           x=x_max-0.5, xend=x_max-0.05,
+           y=which(levels(p2_data$政党_z)=="チームみらい"),
+           yend=which(levels(p2_data$政党_z)=="チームみらい"),
+           arrow=arrow(length=unit(0.25,"cm"), type="closed"),
+           color=col_mirai, linewidth=1.2) +
+  geom_point(aes(fill=is_mirai, shape=is_mirai),
+             size=5, color="white", stroke=0.7) +
+  # 通常政党のラベル
+  geom_text(
+    data = filter(p2_data, !is_mirai),
+    aes(label = sprintf("z = %.2f", z残差),
+        hjust = ifelse(z残差 >= 0, -0.2, 1.2)),
+    color = col_normal, size=3.5
+  ) +
+  # チームみらいのラベルは軸内（x_max-0.6 の位置に左揃え）
+  annotate("label",
+           x     = x_max - 0.05,
+           y     = which(levels(p2_data$政党_z)=="チームみらい"),
+           label = sprintf("z = %.2f\n（他の全政党より\n%.0f倍以上離れている）",
+                           mirai_z_val,
+                           mirai_z_val / max(abs(filter(p2_data, !is_mirai)$z残差))),
+           hjust = 1, vjust = 0.5, size=3.2,
+           color = col_mirai, fontface="bold",
+           fill  = "#fff5f5", label.size=0.3, label.r=unit(0.1,"cm")) +
+  annotate("text", x= 0.5, y=0.78, label="正常域\n|z|<2",  size=3,   color="#27AE60", fontface="italic", vjust=0) +
+  annotate("text", x= 2.5, y=0.78, label="注意\n|z|<3",    size=2.8, color="#E67E22", fontface="italic", vjust=0) +
+  annotate("text", x= 5.5, y=0.78, label="警告域\n|z|≥3",  size=2.8, color="#E74C3C", fontface="italic", vjust=0) +
+  scale_x_continuous(limits=c(-4, x_max), breaks=seq(-3, 7, by=1)) +
+  scale_color_manual(values=c("FALSE"=col_normal,"TRUE"=col_mirai), guide="none") +
+  scale_fill_manual(values =c("FALSE"=col_normal,"TRUE"=col_mirai), guide="none") +
+  scale_shape_manual(values=c("FALSE"=21,"TRUE"=23), guide="none") +
+  labs(title="標準化残差（z スコア）",
+       subtitle="各政党の観測値がモデルの予測から何σ（標準偏差）離れているか  ▶ = 軸外へ突き抜け",
+       x="z スコア", y=NULL) +
+  theme_minimal(base_size=12) +
+  theme(
+    plot.title=element_text(face="bold"),
+    plot.subtitle=element_text(color="#555555"),
+    panel.grid.minor=element_blank(),
+    panel.grid.major.y=element_blank(),
+    axis.text.y = element_text(size = 10.5)
+  )
+```
+
+### 読み方
+
+<div class="callout-box">
+**z スコアとは**
+
+「平均から何標準偏差（σ）離れているか」を表す数値です。
+
+- |z| < 2：正常域（全体の約95%が収まる範囲）
+- |z| = 2〜3：注意域（上位2.5%の外れ値）
+- |z| ≥ 3：警告域（上位0.15%の外れ値）——「3シグマ」と呼ばれる
+</div>
+
+```{r zscore_table}
+zt <- intervals_tbl %>%
+  arrange(desc(z残差)) %>%
+  mutate(
+    `z スコア` = round(z残差, 2),
+    評価 = case_when(
+      abs(z残差) > 3 ~ "★★★ |z|>3（警告）",
+      abs(z残差) > 2 ~ "★★ |z|>2（注意）",
+      TRUE           ~ "正常域"
+    )
+  ) %>%
+  select(政党, `z スコア`, 評価)
+
+datatable(
+  zt,
+  caption  = "政党別 z スコア",
+  rownames = FALSE,
+  options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+  class    = "stripe hover compact"
+) %>%
+  formatStyle(
+    "政党",
+    target          = "row",
+    backgroundColor = styleEqual("チームみらい", "#FDECEA"),
+    color           = styleEqual("チームみらい", "#C0392B"),
+    fontWeight      = styleEqual("チームみらい", "bold")
+  ) %>%
+  formatStyle(
+    "z スコア",
+    background = styleInterval(c(-3, -2, 2, 3),
+      c("#FADBD8","#FDEBD0","#EAFAF1","#FDEBD0","#FADBD8")),
+    fontWeight = "bold"
+  )
+```
+
+<div class="callout-result">
+チームみらいの z スコアは **`r sprintf("%.2f", mirai_z)`** です。
+他の全政党が **−0.9〜+1.3** の正常域に収まっている一方、チームみらいだけが**6σ超**の異常値を示しています。
+このような外れ値が偶然起きる確率は、正規分布で計算すると**10億分の1以下**です。
+</div>
+
+## 3-3. 事後予測パーセンタイル {.tabset}
+
+### グラフ：観測値は予測分布の何番目か
+
+```{r graph3, fig.height=6}
+p3_data <- intervals_tbl %>%
+  mutate(
+    pct_label = sprintf("%.1f%%ile", pctile * 100),
+    政党_p    = fct_reorder(政党, pctile)
+  )
+plvls3 <- levels(p3_data$政党_p)
+
+ggplot(p3_data, aes(x=pctile*100, y=政党_p)) +
+  annotate("rect", xmin= 0, xmax=90,  ymin=-Inf, ymax=Inf, fill="#EAFAF1", alpha=0.4) +
+  annotate("rect", xmin=90, xmax=95,  ymin=-Inf, ymax=Inf, fill="#FDEBD0", alpha=0.5) +
+  annotate("rect", xmin=95, xmax=100, ymin=-Inf, ymax=Inf, fill="#FADBD8", alpha=0.6) +
+  geom_vline(xintercept=c(90,95,99),
+             linetype="dashed",
+             color=c("#F39C12","#E74C3C","#922B21"),
+             linewidth=0.8) +
+  geom_col(aes(fill=is_mirai), width=0.65, alpha=0.88) +
+  # pctile > 0.85 は内側に白文字、それ以外は外側に政党カラー文字
+  geom_text(
+    data = filter(p3_data, pctile <= 0.85),
+    aes(label=pct_label, y=政党_p),
+    x=0, hjust=-0.1, size=3.5, color=col_normal, inherit.aes=FALSE
+  ) +
+  geom_text(
+    data = filter(p3_data, pctile > 0.85),
+    aes(label=pct_label, x=pctile*100, y=政党_p,
+        color=is_mirai),
+    hjust=1.1, size=3.5,
+    fontface=ifelse(filter(p3_data, pctile>0.85)$is_mirai,"bold","plain"),
+    # バー内のテキスト色：チームみらい（赤バー）は白、それ以外は白
+    color="white", inherit.aes=FALSE
+  ) +
+  annotate("text", x=92, y=0.78, label="p=0.10", size=2.8, color="#E67E22", angle=90, vjust=0) +
+  annotate("text", x=97, y=0.78, label="p=0.05", size=2.8, color="#E74C3C", angle=90, vjust=0) +
+  annotate("text", x=99.5, y=0.78, label="p=0.01", size=2.8, color="#922B21", angle=90, vjust=0) +
+  scale_x_continuous(limits=c(0,101), labels=function(x) paste0(x,"%")) +
+  scale_fill_manual(values=c("FALSE"="#5D8AA8","TRUE"=col_mirai), guide="none") +
+  scale_color_manual(values=c("FALSE"=col_normal,"TRUE"=col_mirai), guide="none") +
+  labs(title="観測値の事後予測パーセンタイル",
+       subtitle="観測値が予測分布の何番目に相当するか（100番目 = 予測を大きく超えた）",
+       x="パーセンタイル（%）", y=NULL) +
+  theme_minimal(base_size=12) +
+  theme(
+    plot.title=element_text(face="bold"),
+    plot.subtitle=element_text(color="#555555"),
+    panel.grid.minor=element_blank(),
+    panel.grid.major.y=element_blank(),
+    axis.text.y = element_text(size = 10.5)
+  )
+```
+
+### 読み方
+
+<div class="callout-box">
+**パーセンタイルの意味**
+
+このグラフは「モデルが生成した10万個の予測値のうち、何%が実際の観測値より小さいか」を表しています。
+
+例：参政党が20.4%ile → 予測値の20.4%が参政党の実際の得票率より低かった = 観測値は予測の中間あたりにある = 普通
+
+例：チームみらいが99.8%ile → 予測値の99.8%がチームみらいの実際の得票率より低かった = 観測値はほぼ予測の最大値を超えている
+
+言い換えると、片側の **Bayesian p値 = 1 − パーセンタイル**です。
+</div>
+
+```{r pctile_table}
+pt <- intervals_tbl %>%
+  arrange(desc(pctile)) %>%
+  mutate(
+    パーセンタイル = sprintf("%.1f%%ile", pctile * 100),
+    `Bayesian p値` = round(1 - pctile, 4),
+    評価 = case_when(
+      (1 - pctile) < 0.01  ~ "★★★ p<0.01（高度に有意）",
+      (1 - pctile) < 0.05  ~ "★★ p<0.05（有意）",
+      (1 - pctile) < 0.10  ~ "★ p<0.10（傾向あり）",
+      TRUE                  ~ "有意差なし"
+    )
+  ) %>%
+  select(政党, パーセンタイル, `Bayesian p値`, 評価)
+
+datatable(
+  pt,
+  caption  = "政党別 事後予測パーセンタイル",
+  rownames = FALSE,
+  options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+  class    = "stripe hover compact"
+) %>%
+  formatStyle(
+    "政党",
+    target          = "row",
+    backgroundColor = styleEqual("チームみらい", "#FDECEA"),
+    color           = styleEqual("チームみらい", "#C0392B"),
+    fontWeight      = styleEqual("チームみらい", "bold")
+  ) %>%
+  formatStyle(
+    "Bayesian p値",
+    background = styleInterval(c(0.01, 0.05, 0.1),
+      c("#FADBD8","#FDEBD0","#FFF3CD","white")),
+    fontWeight = "bold"
+  )
+```
+
+## 3-4. 政党別 事後予測密度 {.tabset}
+
+### グラフ：予測の「山」と観測値
+
+```{r graph4, fig.height=9.5, fig.width=11}
+n_draw <- 30000
+dens_data <- merged %>%
+  rowwise() %>%
+  mutate(
+    pred_samples = list({
+      pl <- samples$alpha + samples$beta * log(支持率)
+      ss <- exp(samples$log_sigma)
+      exp(rnorm(n_draw, pl, ss))
+    })
+  ) %>%
+  unnest(pred_samples) %>%
+  rename(pred = pred_samples) %>%
+  ungroup() %>%
+  mutate(is_mirai = 政党 == "チームみらい")
+
+party_dens_order <- merged %>%
+  arrange(desc(東京平均得票率)) %>%
+  pull(政党)
+
+dens_data <- dens_data %>%
+  mutate(政党_d = factor(政党, levels = party_dens_order)) %>%
+  # 各政党の予測を「観測値の3倍 または 99パーセンタイル」でクリップ
+  group_by(政党) %>%
+  mutate(
+    clip_max = max(quantile(pred, 0.99),
+                  東京平均得票率 * 1.5)
+  ) %>%
+  filter(pred <= clip_max) %>%
+  ungroup()
+
+ggplot(dens_data, aes(x = pred)) +
+  geom_density(aes(fill=is_mirai, color=is_mirai),
+               alpha=0.35, linewidth=0.7, trim=TRUE) +
+  geom_vline(
+    data = merged %>%
+      mutate(is_mirai=政党=="チームみらい",
+             政党_d=factor(政党, levels=party_dens_order)),
+    aes(xintercept=東京平均得票率, color=is_mirai),
+    linewidth=1.1, linetype="dashed"
+  ) +
+  geom_text(
+    data = merged %>%
+      mutate(is_mirai=政党=="チームみらい",
+             政党_d=factor(政党, levels=party_dens_order)),
+    aes(x=東京平均得票率, y=Inf,
+        label=sprintf("観測\n%.1f%%", 東京平均得票率),
+        color=is_mirai),
+    vjust=1.3, hjust=-0.08, size=3, fontface="bold", inherit.aes=FALSE
+  ) +
+  facet_wrap(~政党_d, scales="free", ncol=3) +
+  scale_x_continuous(labels=function(x) paste0(x,"%")) +
+  scale_fill_manual(values=c("FALSE"="#5D8AA8","TRUE"=col_mirai),
+                    labels=c("FALSE"="その他政党","TRUE"="チームみらい"), name=NULL) +
+  scale_color_manual(values=c("FALSE"="#2C5F7A","TRUE"=col_mirai), guide="none") +
+  labs(title="政党別 事後予測分布と観測値",
+       subtitle="塗り = モデルが予測する分布　破線 = 実際の観測値",
+       x="東京比例 平均得票率（%）", y="密度") +
+  theme_minimal(base_size=10.5) +
+  theme(
+    plot.title=element_text(face="bold", size=13),
+    legend.position="top",
+    strip.text=element_text(
+      face  = ifelse(party_dens_order=="チームみらい","bold","plain"),
+      color = ifelse(party_dens_order=="チームみらい",col_mirai,col_normal),
+      size  = 10
+    ),
+    panel.grid.minor=element_blank()
+  )
+```
+
+### 読み方
+
+<div class="callout-box">
+**このグラフの見方**
+
+各政党のパネルで：
+- **塗りつぶした山**：モデルが「おそらくこの範囲に収まるだろう」と予測した分布
+- **破線**：実際の観測値
+
+**ほとんどの政党**では、破線が山の中（密度の高いところ）に位置しています。予測が当たっているということです。
+
+**チームみらい（右上の赤いパネル）**では、密度の山は0〜5%あたりにありますが、観測値の破線は12.2%で山のほぼ右端にあります。モデルの予測からかけ離れた値が実現しています。
+</div>
+
+## 3-5. 増幅倍率の分解 {.tabset}
+
+### グラフ：「説明できる増幅」vs「説明できない乖離」
+
+```{r graph5, fig.height=6}
+wf_data <- intervals_tbl %>%
+  mutate(
+    予測倍率 = `q0.5` / 支持率,
+    全体倍率 = 東京平均得票率 / 支持率,
+    政党_w   = fct_reorder(政党, -全体倍率)
+  )
+wlvls <- levels(wf_data$政党_w)
+
+ggplot(wf_data, aes(y = 政党_w)) +
+  geom_col(aes(x = 予測倍率), fill = "#AED6F1", width=0.6, alpha=0.8) +
+  geom_col(aes(x = 全体倍率), fill = col_mirai, width=0.6, alpha=0.85) +
+  geom_text(aes(x = 全体倍率,
+                label = sprintf("×%.1f", 全体倍率)),
+            hjust=-0.12, size=3.5,
+            color = col_normal,
+            fontface=ifelse(wf_data$is_mirai,"bold","plain")) +
+  geom_vline(xintercept=mean(wf_data$予測倍率),
+             linetype="dashed", color="#2C5F7A", linewidth=0.8) +
+  annotate("text",
+           x=mean(wf_data$予測倍率)+0.3, y=0.4,
+           label=sprintf("予測倍率\n平均 ×%.1f", mean(wf_data$予測倍率)),
+           hjust=0, size=3.0, color="#2C5F7A") +
+  scale_color_manual(values=c("FALSE"=col_normal,"TRUE"=col_mirai), guide="none") +
+  scale_x_continuous(labels=function(x) paste0("×",x), limits=c(0,76)) +
+  labs(title="支持率からの増幅倍率の分解",
+       subtitle="青（薄）= モデルが説明できる増幅（全政党で共通）　赤 = モデルで説明できない乖離",
+       x="倍率（東京実得票率 ÷ 世論調査支持率）", y=NULL) +
+  theme_minimal(base_size=12) +
+  theme(
+    plot.title=element_text(face="bold"),
+    plot.subtitle=element_text(color="#555555"),
+    panel.grid.minor=element_blank(),
+    panel.grid.major.y=element_blank(),
+    axis.text.y = element_text(size = 10.5)
+  )
+```
+
+### 読み方
+
+<div class="callout-box">
+**倍率の2層構造**
+
+すべての政党で「支持率→東京得票率」に増幅が起きます（東京は支持率調査より本番の方が高くなりやすい）。
+これは**モデルが説明できる増幅**（青い部分）です。
+
+チームみらいは、その「説明できる増幅」を大きく上回る乖離があります。
+青の部分はわずかで、残りの大部分が**モデルで説明できない赤い部分**です。
+
+他党がすべて×1.5〜×5.6の範囲に収まっているのに、チームみらいだけ×61という異常値です。
+</div>
+
+---
+
+# 4. 検定結果のまとめ
+
+```{r results='asis'}
+mirai_pv_fmt  <- sprintf("%.4f", mirai_pv)
+mirai_pctile_fmt <- sprintf("%.1f", mirai_row$pctile * 100)
+mirai_z_fmt   <- sprintf("%.2f", mirai_z)
+
+cat(sprintf(
+'<div class="callout-result">
+<strong>Bayesian 事後予測 p 値 = %s（★★ p &lt; 0.01）</strong><br><br>
+チームみらいの観測値（12.2%%）は、事後予測分布の <strong>%s%%ile</strong> に相当します。<br>
+これは、モデルが生成した予測のうち <strong>%s%%</strong> がチームみらいの実際の得票率を下回っていたことを意味します。<br><br>
+z スコア = <strong>%s σ</strong>——「支持率0.2%%の政党が得票率12.2%%を取る」という事象は、
+モデルから %s 標準偏差離れた位置にある極端な外れ値です。
+</div>',
+mirai_pv_fmt, mirai_pctile_fmt,
+mirai_pctile_fmt, mirai_z_fmt, mirai_z_fmt
+))
+```
+
+```{r summary_table}
+st <- tibble(
+  グラフ    = paste0("Graph ", 1:5),
+  分析手法  = c(
+    "事後予測区間 vs 観測値",
+    "標準化残差（z スコア）",
+    "事後予測パーセンタイル",
+    "政党別予測密度 小倍図",
+    "支持率増幅倍率の分解"
+  ),
+  チームみらいの結果 = c(
+    "95%予測区間（0.30〜3.66%）を大きく超える 12.22%",
+    sprintf("z = %.2f σ（他全政党は −0.9〜+1.3 の正常域）", mirai_z),
+    sprintf("%.1f%%ile（p ≈ %.4f）", mirai_row$pctile*100, 1-mirai_row$pctile),
+    "密度の山が 0〜3% に集中、観測値 12.2% は山のほぼ外",
+    "他党 ×1.5〜5.6 に対してチームみらいは ×61.1"
+  ),
+  判定 = rep("★★★ 異常", 5)
+)
+
+datatable(
+  st,
+  caption  = "5つの事後予測チェックの結果サマリー",
+  rownames = FALSE,
+  options  = list(pageLength = 5, dom = "t", ordering = FALSE),
+  class    = "stripe hover compact"
+) %>%
+  formatStyle(
+    "判定",
+    color           = "#C0392B",
+    backgroundColor = "#FDECEA",
+    fontWeight      = "bold",
+    textAlign       = "center"
+  )
+```
+
+---
+
+# 5. 対抗仮説：「異常ではない」説明は可能か？
+
+<div class="callout-warn">
+**重要な注意：統計的異常は「不正の証拠」ではない**
+
+以下の「自然な説明」が成立するなら、今回の結果は異常でない可能性があります。
+これらの仮説を検証してこそ、分析が完結します。
+</div>
+
+```{r counter_hypotheses}
+tibble(
+  No. = 1:4,
+  対抗仮説 = c(
+    "安野貴博の東京知名度効果",
+    "東京の特殊な有権者構成",
+    "世論調査自体の偏り",
+    "投票先の戦略的シフト"
+  ),
+  内容 = c(
+    "チームみらい代表・安野貴博氏は2024年東京都知事選に出馬（約16万票）。東京でのみ高い知名度が東京の得票を押し上げた可能性がある",
+    "東京はIT・高学歴・若年層が集中しており、チームみらいの政策（テクノロジー・デジタル改革）と親和性が高い有権者層が多い可能性がある",
+    "時事通信の電話調査は高齢者・固定電話保有者に偏りがちで、チームみらいの主要支持層（若年・スマートフォン中心）が過小代表の可能性がある",
+    "比例投票では「死票を避けて当選確実な政党に入れる」戦略が見られることがあり、東京でのみ集中投票があった可能性"
+  ),
+  反証可能性 = c(
+    "都知事選の区別得票と今回の区別得票の相関を確認すれば検証できる",
+    "他都市（大阪・名古屋など）のチームみらい得票率と比較すれば検証できる",
+    "ネット調査・出口調査と比較することで偏りの大きさを推定できる",
+    "選挙前のネット上の動員活動記録、SNS投稿の分析で検証できる"
+  )
+) %>%
+  datatable(
+    rownames = FALSE,
+    options  = list(pageLength = 5, dom = "t", ordering = FALSE, scrollX = TRUE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("No.", textAlign = "center", fontWeight = "bold") %>%
+  formatStyle("対抗仮説", fontWeight = "bold")
+```
+
+### 感度分析：支持率が何%なら「普通」と言えるか
+
+```{r sensitivity}
+alpha_med <- median(samples$alpha)
+beta_med  <- median(samples$beta)
+y_obs     <- log(merged$東京平均得票率[merged$is_mirai])
+
+p05  <- exp((y_obs - 1.645 * sigma_med - alpha_med) / beta_med)
+p01  <- exp((y_obs - 2.326 * sigma_med - alpha_med) / beta_med)
+p001 <- exp((y_obs - 3.090 * sigma_med - alpha_med) / beta_med)
+```
+
+チームみらいの東京得票率12.2%が「統計的に驚くべきではない（p≥0.05）」と言えるためには、世論調査支持率が **`r sprintf("%.1f", p05)`% 以上** である必要があります。
+
+```{r sensitivity_plot, fig.height=3.5}
+tibble(
+  有意水準 = c("p < 0.05\n（有意）", "p < 0.01\n（高度に有意）", "p < 0.001\n（極めて有意）"),
+  必要支持率  = c(p05, p01, p001),
+  実際の支持率 = 0.2
+) %>%
+  mutate(有意水準 = factor(有意水準, levels = 有意水準)) %>%
+  ggplot(aes(y = 有意水準)) +
+  geom_col(aes(x = 必要支持率), fill = "#5D8AA8", width = 0.5, alpha = 0.8) +
+  geom_col(aes(x = 実際の支持率), fill = col_mirai, width = 0.5, alpha = 0.9) +
+  geom_text(aes(x = 必要支持率,
+                label = sprintf("必要支持率: %.2f%%", 必要支持率)),
+            hjust = -0.1, size = 3.8) +
+  geom_vline(xintercept = 0.2, linetype = "dashed",
+             color = col_mirai, linewidth = 1) +
+  annotate("text", x = 0.2, y = 3.5,
+           label = "実際の支持率\n0.2%",
+           color = col_mirai, size = 3.2, hjust = 1.1, fontface = "bold") +
+  scale_x_continuous(limits = c(0, 5),
+                     labels = function(x) paste0(x, "%")) +
+  labs(title = "「観測値が有意でなくなる」ために必要な支持率",
+       subtitle = "青 = 必要支持率　赤線 = 実際の支持率（0.2%）",
+       x = "支持率（%）", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor   = element_blank())
+```
+
+<div class="callout-warn">
+p < 0.05 の閾値を満たすだけでも、実際の支持率（0.2%）の **`r sprintf("%.0f", p05/0.2)`倍**の支持率が必要です。
+「世論調査の誤差」で埋められる差ではありません。
+</div>
+
+---
+
+# 6. 結論
+
+## 分析結果の要約
+
+```{r conclusion_table}
+tibble(
+  項目 = c(
+    "支持率 → 実得票率 の倍率",
+    "他党との比較（倍率）",
+    "z スコア（事後予測）",
+    "事後予測パーセンタイル",
+    "Bayesian p値（片側）",
+    "「普通」と言えるための支持率"
+  ),
+  値 = c(
+    "× 61.1（支持率0.2% → 得票率12.2%）",
+    "他党は × 1.5〜5.6 の範囲",
+    sprintf("%.2f σ（他全政党は −0.9〜+1.3）", mirai_z),
+    sprintf("%.1f%%ile", mirai_row$pctile * 100),
+    sprintf("p = %.4f（p < 0.01）", 1 - mirai_row$pctile),
+    sprintf("最低 %.2f%% 必要（実際の11倍以上）", p05)
+  ),
+  評価 = c("★★★", "★★★", "★★★", "★★★", "★★", "★★★")
+) %>%
+  datatable(
+    rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("項目", fontWeight = "bold") %>%
+  formatStyle("評価",
+    fontWeight = "bold", textAlign = "center",
+    color = "#C0392B", backgroundColor = "#FDECEA"
+  )
+```
+
+<div class="callout-result">
+**統計的結論**
+
+5つの独立した視点からの事後予測チェックのすべてにおいて、チームみらいの得票率は
+「支持率0.2%の政党として自然に期待される値」から **極めて大きく乖離** しています。
+
+Bayesian p 値 = **`r sprintf("%.4f", 1 - mirai_row$pctile)`**（p < 0.01）
+z スコア = **`r sprintf("%.2f", mirai_z)` σ**
+
+このレベルの乖離は、モデルのばらつきや東京の地域特性だけでは説明しにくいです。
+</div>
+
+<div class="callout-warn">
+**ただし、本分析の限界**
+
+1. **本分析単独で「不正の証明」にはならない**
+   統計的異常 = 異常なことが起きた可能性が高い、という示唆に過ぎません。
+
+2. **対抗仮説が否定できていない**
+   安野貴博の東京知名度効果・有権者構成の偏り・世論調査自体の偏りを定量的に排除できれば、分析の信頼性は格段に上がります。
+
+3. **東京都のデータのみ**
+   他都道府県でも同様の乖離があるかどうかを確認することが、次の重要なステップです。
+
+4. **世論調査と実選挙の乖離は常にある**
+   今回のモデルは「乖離の大きさに上限がある」という暗黙の前提を置いています。
+   まったく新しい政党・候補者の場合、世論調査が実態を大きく見誤ることもあり得ます。
+</div>
+
+---
+
+# 7. 仮説：「みらい票の90%は参政党の票だった」を検定する {.tabset}
+
+<div class="callout-box">
+**仮説の設定**
+
+もしチームみらいの票の90%が本来は参政党に入るべき票だったとしたら、
+「参政党の真の得票数」はどうなるか？
+そしてその数値は **統計的に説明できるか**？
+
+- **帰無仮説H₀**：参政党の本来の得票率は世論調査支持率3.4%と整合する（自然な範囲）
+- **対立仮説H₁**：90%移転後の参政党票数は世論調査から見て統計的に異常
+</div>
+
+## 7-1. 移転後の票数計算
+
+```{r transfer_calc}
+transfer_ratio <- 0.9  # 移転仮定割合
+
+# 市区町村別に移転計算
+df_transfer <- df_unit %>%
+  filter(政党 %in% c("チームみらい", "参政党")) %>%
+  select(市区町村, 政党, 票数, 単位合計, 得票率) %>%
+  pivot_wider(names_from = 政党, values_from = c(票数, 得票率),
+              names_sep = "_") %>%
+  rename(
+    みらい票数   = `票数_チームみらい`,
+    参政票数     = `票数_参政党`,
+    みらい率     = `得票率_チームみらい`,
+    参政率       = `得票率_参政党`
+  ) %>%
+  mutate(
+    移転票数         = round(みらい票数 * transfer_ratio),
+    参政票数_仮定    = 参政票数 + 移転票数,
+    みらい票数_仮定  = みらい票数 - 移転票数,
+    参政率_仮定      = round(参政票数_仮定 / 単位合計 * 100, 2),
+    みらい率_仮定    = round(みらい票数_仮定 / 単位合計 * 100, 2)
+  )
+
+# 東京全体の集計
+total_ballot <- df_unit %>%
+  group_by(市区町村) %>% summarise(合計 = first(単位合計), .groups = "drop") %>%
+  pull(合計) %>% sum()
+
+total_mirai_actual  <- sum(df_transfer$みらい票数,     na.rm = TRUE)
+total_sansei_actual <- sum(df_transfer$参政票数,       na.rm = TRUE)
+total_transferred   <- sum(df_transfer$移転票数,       na.rm = TRUE)
+total_sansei_hypo   <- sum(df_transfer$参政票数_仮定,  na.rm = TRUE)
+total_mirai_hypo    <- sum(df_transfer$みらい票数_仮定, na.rm = TRUE)
+
+sansei_rate_actual  <- total_sansei_actual / total_ballot * 100
+sansei_rate_hypo    <- total_sansei_hypo   / total_ballot * 100
+mirai_rate_actual   <- total_mirai_actual  / total_ballot * 100
+mirai_rate_hypo     <- total_mirai_hypo    / total_ballot * 100
+
+tibble(
+  区分           = c("チームみらい（実際）", "参政党（実際）",
+                     "─── 90%移転後 ───",
+                     "チームみらい（仮定）", "参政党（仮定）"),
+  票数           = c(total_mirai_actual, total_sansei_actual, NA,
+                     total_mirai_hypo,   total_sansei_hypo),
+  東京得票率     = c(mirai_rate_actual,  sansei_rate_actual, NA,
+                     mirai_rate_hypo,    sansei_rate_hypo),
+  世論調査支持率 = c(0.2, 3.4, NA, 0.2, 3.4),
+  倍率           = c(mirai_rate_actual / 0.2, sansei_rate_actual / 3.4, NA,
+                     mirai_rate_hypo   / 0.2, sansei_rate_hypo   / 3.4)
+) %>%
+  mutate(
+    票数           = ifelse(is.na(票数),           "—", formatC(票数, format = "d", big.mark = ",")),
+    東京得票率     = ifelse(is.na(東京得票率),     "—", sprintf("%.2f%%", 東京得票率)),
+    世論調査支持率 = ifelse(is.na(世論調査支持率), "—", paste0(世論調査支持率, "%")),
+    倍率           = ifelse(is.na(倍率),           "—", sprintf("× %.1f", 倍率))
+  ) %>%
+  datatable(
+    rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("区分",
+    fontWeight      = styleEqual(c("参政党（仮定）","チームみらい（仮定）"), c("bold","bold")),
+    backgroundColor = styleEqual(
+      c("参政党（仮定）","チームみらい（仮定）","─── 90%移転後 ───"),
+      c("#FFF3E0","#E8F4F8","#F5F5F5")
+    )
+  )
+```
+
+<div class="callout-result">
+90%を移転すると、参政党の東京得票率は `r sprintf("%.1f%%", sansei_rate_actual)` → **`r sprintf("%.1f%%", sansei_rate_hypo)`** になります。
+世論調査支持率3.4%に対する倍率は **`r sprintf("× %.1f", sansei_rate_hypo/3.4)`** 倍です（実際の参政党は `r sprintf("× %.1f", sansei_rate_actual/3.4)` 倍）。
+</div>
+
+## 7-2. 回帰モデルによる妥当性検定
+
+既存の「世論調査支持率 → 東京得票率」の対数回帰モデル（チームみらい除く8政党で構築）に、
+仮定後の参政党得票率を当てはめて **予測区間から外れるか** を確認します。
+
+```{r transfer_regression_test, fig.height=6}
+# 仮定後の参政党平均得票率（加重平均）
+sansei_hypo_mean   <- weighted.mean(df_transfer$参政率_仮定,  df_transfer$単位合計, na.rm = TRUE)
+actual_sansei_mean <- filter(merged, 政党 == "参政党") %>% pull(東京平均得票率)
+
+# OLS モデル（ols_ref）から参政党支持率3.4%時の予測区間
+pred_sansei    <- predict(ols_ref, newdata = data.frame(支持率 = 3.4), interval = "prediction")
+pred_sansei_df <- as.data.frame(pred_sansei) %>% mutate(across(everything(), exp))
+pi_lower <- pred_sansei_df$lwr
+pi_upper <- pred_sansei_df$upr
+
+# 散布図用データ
+hypo_point <- tibble(
+  支持率         = 3.4,
+  東京平均得票率 = sansei_hypo_mean,
+  is_mirai       = FALSE,
+  政党           = sprintf("参政党\n（仮定：+%.0f万票）", total_transferred / 1e4),
+  type           = "仮定"
+)
+
+plot_df <- merged %>%
+  mutate(type = ifelse(is_mirai, "みらい（実際）", "参照政党")) %>%
+  bind_rows(hypo_point)
+
+# 予測区間リボン
+nd2     <- tibble(支持率 = exp(seq(log(0.15), log(25), length.out = 300)))
+pred2   <- predict(ols_ref, newdata = list(支持率 = nd2$支持率), interval = "prediction")
+ribbon2 <- bind_cols(nd2, as.data.frame(pred2)) %>%
+  mutate(lwr = exp(lwr), fit = exp(fit), upr = exp(upr))
+
+ggplot(plot_df, aes(x = 支持率, y = 東京平均得票率)) +
+  geom_ribbon(data = ribbon2, aes(x = 支持率, ymin = lwr, ymax = upr),
+              fill = "#AED6F1", alpha = 0.25, inherit.aes = FALSE) +
+  geom_line(data = ribbon2, aes(x = 支持率, y = fit),
+            color = "#2C5F7A", linewidth = 1.1, linetype = "dashed",
+            inherit.aes = FALSE) +
+  geom_hline(yintercept = pi_upper, linetype = "dotted",
+             color = "#E07B00", linewidth = 0.9) +
+  annotate("text", x = 0.18, y = pi_upper * 1.12,
+           label = sprintf("95%%予測区間 上限（支持率3.4%%時）\n→ %.1f%%", pi_upper),
+           hjust = 0, size = 3.2, color = "#E07B00") +
+  geom_point(data = filter(plot_df, type == "参照政党"),
+             aes(color = type), size = 4.5, shape = 16, alpha = 0.85) +
+  geom_point(data = filter(plot_df, type == "みらい（実際）"),
+             aes(color = type), size = 6, shape = 18) +
+  geom_point(data = filter(plot_df, type == "仮定"),
+             aes(color = type), size = 6, shape = 15) +
+  ggrepel::geom_text_repel(data = filter(plot_df, type != "仮定"),
+                            aes(label = 政党), size = 3.3,
+                            color = "#2C3E50", max.overlaps = 15) +
+  ggrepel::geom_text_repel(data = filter(plot_df, type == "仮定"),
+                            aes(label = 政党), size = 3.5,
+                            color = "#8B3A00", fontface = "bold", max.overlaps = 10) +
+  scale_color_manual(
+    values = c("参照政党" = "#5D8AA8", "みらい（実際）" = "#E74C3C", "仮定" = "#E07B00"),
+    name = NULL
+  ) +
+  scale_x_log10(labels = function(x) paste0(x, "%"),
+                breaks = c(0.2, 0.5, 1, 2, 5, 10, 20)) +
+  scale_y_log10(labels = function(x) paste0(x, "%"),
+                breaks = c(1, 2, 5, 10, 20, 30, 50)) +
+  labs(title = "「参政党（仮定）」は回帰モデルの予測区間に収まるか？",
+       subtitle = "帯＝95%予測区間（チームみらい除く8政党ベース）　■＝仮定参政党　◆＝みらい実際値",
+       x = "時事通信 支持率（%、対数軸）", y = "東京 平均得票率（%、対数軸）") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title      = element_text(face = "bold"),
+        plot.subtitle   = element_text(color = "#555555"),
+        panel.grid.minor = element_blank(),
+        legend.position  = "top")
+```
+
+```{r transfer_pvalue}
+# z スコアと p 値（対数スケール）
+log_pred_mean <- predict(ols_ref, newdata = data.frame(支持率 = 3.4))
+log_pred_se   <- predict(ols_ref, newdata = data.frame(支持率 = 3.4),
+                          se.fit = TRUE)$se.fit
+sigma_ols     <- sigma(ols_ref)
+se_pred       <- sqrt(sigma_ols^2 + log_pred_se^2)
+
+z_hypo        <- (log(sansei_hypo_mean)  - log_pred_mean) / se_pred
+z_act_sansei  <- (log(actual_sansei_mean) - log_pred_mean) / se_pred
+p_hypo_upper  <- 1 - pnorm(z_hypo)
+p_act_upper   <- 1 - pnorm(z_act_sansei)
+
+# チームみらい（参考）
+mirai_mean_val <- filter(merged, is_mirai) %>% pull(東京平均得票率)
+log_pred_m0    <- predict(ols_ref, newdata = data.frame(支持率 = 0.2))
+log_pred_se0   <- predict(ols_ref, newdata = data.frame(支持率 = 0.2),
+                           se.fit = TRUE)$se.fit
+se_pred0       <- sqrt(sigma_ols^2 + log_pred_se0^2)
+z_mirai_val    <- (log(mirai_mean_val) - log_pred_m0) / se_pred0
+p_mirai_val    <- 1 - pnorm(z_mirai_val)
+
+tibble(
+  シナリオ       = c(
+    "参政党（実際：支持率3.4%）",
+    sprintf("参政党（仮定：90%%移転後 → %.1f%%）", sansei_hypo_mean),
+    "チームみらい（参考：支持率0.2%）"
+  ),
+  東京平均得票率 = c(actual_sansei_mean, sansei_hypo_mean, mirai_mean_val),
+  zスコア        = c(z_act_sansei, z_hypo, z_mirai_val),
+  片側p値        = c(p_act_upper, p_hypo_upper, p_mirai_val),
+  判定           = c(
+    ifelse(p_act_upper   < 0.05, "異常（p<0.05）", "正常範囲"),
+    ifelse(p_hypo_upper  < 0.05, "異常（p<0.05）", "正常範囲"),
+    ifelse(p_mirai_val   < 0.05, "異常（p<0.05）", "正常範囲")
+  )
+) %>%
+  mutate(
+    東京平均得票率 = sprintf("%.2f%%", 東京平均得票率),
+    zスコア        = sprintf("%.2f σ",  zスコア),
+    片側p値        = sprintf("%.4f",    片側p値)
+  ) %>%
+  datatable(
+    rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("判定",
+    color           = styleEqual(c("異常（p<0.05）","正常範囲"), c("#C0392B","#27AE60")),
+    fontWeight      = "bold",
+    backgroundColor = styleEqual(c("異常（p<0.05）","正常範囲"), c("#FDECEA","#EAFAF1"))
+  )
+```
+
+## 7-3. 市区町村別の分布：移転前後の参政党得票率
+
+```{r transfer_city_plot, fig.height=9}
+df_transfer_long <- df_transfer %>%
+  select(市区町村, 参政率, 参政率_仮定) %>%
+  pivot_longer(-市区町村, names_to = "シナリオ", values_to = "得票率") %>%
+  mutate(
+    シナリオ = recode(シナリオ,
+      参政率      = "参政党（実際）",
+      参政率_仮定 = "参政党（仮定：+90%移転）"
+    ),
+    市区町村 = fct_reorder(
+      市区町村,
+      ifelse(シナリオ == "参政党（仮定：+90%移転）", 得票率, NA_real_),
+      .fun = function(x) mean(x, na.rm = TRUE)
+    )
+  )
+
+ggplot(df_transfer_long, aes(x = 得票率, y = 市区町村, color = シナリオ, shape = シナリオ)) +
+  annotate("rect", xmin = pi_lower, xmax = pi_upper,
+           ymin = -Inf, ymax = Inf, fill = "#AED6F1", alpha = 0.20) +
+  annotate("text", x = (pi_lower + pi_upper) / 2, y = Inf,
+           label = sprintf("95%%予測区間\n（支持率3.4%%）\n%.1f%%〜%.1f%%", pi_lower, pi_upper),
+           vjust = 1.3, size = 2.8, color = "#2C5F7A") +
+  geom_vline(xintercept = pi_upper, linetype = "dashed",
+             color = "#2C5F7A", linewidth = 0.7) +
+  geom_line(aes(group = 市区町村), color = "#CCCCCC", linewidth = 0.5) +
+  geom_point(size = 3, alpha = 0.9) +
+  scale_color_manual(values = c("参政党（実際）"          = "#5D8AA8",
+                                 "参政党（仮定：+90%移転）" = "#E07B00"),
+                     name = NULL) +
+  scale_shape_manual(values = c("参政党（実際）"          = 16,
+                                 "参政党（仮定：+90%移転）" = 15),
+                     name = NULL) +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  labs(title    = "市区町村別：参政党の得票率（実際 vs 仮定）",
+       subtitle = "青帯＝95%予測区間（支持率3.4%時）　■が帯の右端を超えれば統計的に異常な水準",
+       x = "得票率（%）", y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(plot.title         = element_text(face = "bold"),
+        plot.subtitle      = element_text(color = "#555555", size = 9.5),
+        legend.position    = "top",
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor   = element_blank())
+```
+
+## 7-4. 結論：90%移転仮説の統計的判定
+
+```{r transfer_conclusion}
+pct_above_pi <- mean(df_transfer$参政率_仮定 > pi_upper, na.rm = TRUE) * 100
+
+tibble(
+  項目 = c(
+    "仮定後 参政党 東京平均得票率",
+    "世論調査支持率（3.4%）に対する倍率",
+    "回帰モデル 95%予測区間（支持率3.4%）",
+    "z スコア（対数モデル）",
+    "片側 p 値",
+    "95%予測区間を超える市区町村の割合",
+    "統計的判定"
+  ),
+  値 = c(
+    sprintf("%.1f%%（実際の参政党は %.1f%%）", sansei_hypo_mean, actual_sansei_mean),
+    sprintf("× %.1f（実際の参政党は × %.1f）", sansei_hypo_mean / 3.4, actual_sansei_mean / 3.4),
+    sprintf("%.1f%% 〜 %.1f%%", pi_lower, pi_upper),
+    sprintf("%.2f σ", z_hypo),
+    sprintf("p = %.4f", p_hypo_upper),
+    sprintf("%.0f%% の市区町村が上限を超過", pct_above_pi),
+    ifelse(p_hypo_upper < 0.05,
+           "❌ 統計的に異常（p < 0.05）",
+           "✅ 統計的に正常範囲内")
+  )
+) %>%
+  datatable(
+    rownames = FALSE,
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("項目", fontWeight = "bold") %>%
+  formatStyle("値",
+    backgroundColor = styleEqual(
+      c("❌ 統計的に異常（p < 0.05）", "✅ 統計的に正常範囲内"),
+      c("#FDECEA", "#EAFAF1")
+    )
+  )
+```
+
+<div class="callout-result">
+**仮説検定の結論**
+
+「チームみらいの得票の90%が参政党に流れた」と仮定した場合、
+参政党の東京得票率は **`r sprintf("%.1f%%", sansei_hypo_mean)`** となります。
+
+この値は世論調査支持率3.4%に対して **`r sprintf("× %.1f倍", sansei_hypo_mean/3.4)`** であり、
+回帰モデルが予測する95%区間（`r sprintf("%.1f%%〜%.1f%%", pi_lower, pi_upper)`）と比較すると
+
+- z スコア = **`r sprintf("%.2f", z_hypo)` σ**
+- 片側 p 値 = **`r sprintf("%.4f", p_hypo_upper)`**
+
+`r if(p_hypo_upper < 0.05) "**90%移転後の参政党票数も統計的に異常** です。移転先の参政党にとっても「その規模の票は来ないはず」という別の異常が生じるため、単純な参政党への票移転では矛盾が解消しません。" else "90%移転後の参政党票数は統計的に説明可能な範囲に収まります。ただし、これは「参政党の規模として不自然ではない」という意味に過ぎず、実際に移転があった証拠にはなりません。"`
+</div>
+
+---
+
+# 8. 拡張仮説：みらい票90%を「参政・保守・れいわ・減税」に按分した場合 {.tabset}
+
+<div class="callout-box">
+**仮説の設定**
+
+チームみらいの票の90%を、**参政党・日本保守党・れいわ新選組・減税日本・ゆうこく連合**の4党に
+各市区町村の実際の得票比率で**按分**した場合、
+
+1. 各受取党の得票率は統計的に説明できるか？
+2. 残された チームみらい（10%）の得票率は統計的に説明できるか？
+
+の2点を同じ回帰モデルで検定します。
+</div>
+
+## 8-1. 市区町村別 按分計算
+
+```{r dist4_calc}
+dist_parties  <- c("参政党", "日本保守党", "れいわ新選組", "減税日本・ゆうこく連合")
+all5_parties  <- c("チームみらい", dist_parties)
+transfer_r4   <- 0.9
+
+# 5党の市区町村別データをワイド形式に
+df_wide5 <- df_unit %>%
+  filter(政党 %in% all5_parties) %>%
+  select(市区町村, 政党, 票数, 単位合計, 得票率) %>%
+  pivot_wider(names_from = 政党,
+              values_from = c(票数, 得票率),
+              names_sep   = "___")
+
+names(df_wide5) <- names(df_wide5) %>%
+  str_replace("___", "_") %>%
+  str_replace_all("チームみらい",         "mirai") %>%
+  str_replace_all("参政党",               "sansei") %>%
+  str_replace_all("日本保守党",           "hoshu") %>%
+  str_replace_all("れいわ新選組",         "reiwa") %>%
+  str_replace_all("減税日本・ゆうこく連合", "zei")
+
+# 按分計算（4党合計票数をシェアの分母とする）
+df_dist4 <- df_wide5 %>%
+  mutate(
+    base4          = 票数_sansei + 票数_hoshu + 票数_reiwa + 票数_zei,
+    transfer_pool  = round(票数_mirai * transfer_r4),
+    add_sansei     = round(transfer_pool * 票数_sansei / base4),
+    add_hoshu      = round(transfer_pool * 票数_hoshu  / base4),
+    add_reiwa      = round(transfer_pool * 票数_reiwa  / base4),
+    # 端数を zei に吸収
+    add_zei        = transfer_pool - add_sansei - add_hoshu - add_reiwa,
+    新_mirai       = 票数_mirai   - transfer_pool,
+    新_sansei      = 票数_sansei  + add_sansei,
+    新_hoshu       = 票数_hoshu   + add_hoshu,
+    新_reiwa       = 票数_reiwa   + add_reiwa,
+    新_zei         = 票数_zei     + add_zei,
+    率_mirai       = round(新_mirai  / 単位合計 * 100, 2),
+    率_sansei      = round(新_sansei / 単位合計 * 100, 2),
+    率_hoshu       = round(新_hoshu  / 単位合計 * 100, 2),
+    率_reiwa       = round(新_reiwa  / 単位合計 * 100, 2),
+    率_zei         = round(新_zei    / 単位合計 * 100, 2)
+  )
+
+# 東京全体サマリー
+total_bal4 <- df_unit %>%
+  group_by(市区町村) %>% summarise(合計 = first(単位合計), .groups = "drop") %>%
+  pull(合計) %>% sum()
+
+poll_rates4 <- c(
+  "チームみらい" = 0.2, "参政党" = 3.4, "日本保守党" = 1.1,
+  "れいわ新選組" = 0.9, "減税日本・ゆうこく連合" = 0.3  # 時事通信調査未掲載のため仮置き0.3%
+)
+
+key_actual4 <- c("チームみらい"="票数_mirai","参政党"="票数_sansei",
+                  "日本保守党"="票数_hoshu","れいわ新選組"="票数_reiwa",
+                  "減税日本・ゆうこく連合"="票数_zei")
+key_hypo4   <- c("チームみらい"="新_mirai","参政党"="新_sansei",
+                  "日本保守党"="新_hoshu","れいわ新選組"="新_reiwa",
+                  "減税日本・ゆうこく連合"="新_zei")
+
+summary4 <- tibble(政党 = names(poll_rates4)) %>%
+  mutate(
+    支持率    = poll_rates4[政党],
+    票数_実際 = map_dbl(政党, ~ sum(df_dist4[[key_actual4[.x]]], na.rm = TRUE)),
+    票数_仮定 = map_dbl(政党, ~ sum(df_dist4[[key_hypo4[.x]]],   na.rm = TRUE)),
+    率_実際   = 票数_実際 / total_bal4 * 100,
+    率_仮定   = 票数_仮定 / total_bal4 * 100,
+    倍率_実際 = 率_実際 / 支持率,
+    倍率_仮定 = 率_仮定 / 支持率
+  )
+
+summary4 %>%
+  mutate(
+    票数_実際 = formatC(票数_実際, format = "d", big.mark = ","),
+    票数_仮定 = formatC(票数_仮定, format = "d", big.mark = ","),
+    率_実際   = sprintf("%.2f%%", 率_実際),
+    率_仮定   = sprintf("%.2f%%", 率_仮定),
+    倍率_実際 = sprintf("× %.1f", 倍率_実際),
+    倍率_仮定 = sprintf("× %.1f", 倍率_仮定),
+    支持率    = paste0(支持率, "%")
+  ) %>%
+  select(政党, 支持率, 票数_実際, 率_実際, 倍率_実際, 票数_仮定, 率_仮定, 倍率_仮定) %>%
+  datatable(
+    rownames = FALSE,
+    colnames = c("政党","世論調査支持率",
+                 "票数（実際）","得票率（実際）","倍率（実際）",
+                 "票数（仮定）","得票率（仮定）","倍率（仮定）"),
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("政党",
+    fontWeight      = styleEqual("チームみらい", "bold"),
+    backgroundColor = styleEqual("チームみらい", "#E8F4F8")
+  )
+```
+
+<div class="callout-result">
+90%を4党に按分するとチームみらいの残票は約 **`r sprintf("%.1f%%", filter(summary4, 政党=="チームみらい")$率_仮定)`** になります。
+最大受取党は**`r filter(summary4, 政党!="チームみらい") %>% slice_max(率_仮定, n=1) %>% pull(政党)`**で **`r filter(summary4, 政党!="チームみらい") %>% slice_max(率_仮定, n=1) %>% pull(率_仮定) %>% sprintf("%.1f%%", .)`** となります。
+</div>
+
+## 8-2. 回帰モデルによる各党の妥当性検定
+
+```{r dist4_regression}
+# 各党の加重平均得票率（仮定後）
+rate_key_hypo4  <- c("チームみらい"="率_mirai","参政党"="率_sansei",
+                      "日本保守党"="率_hoshu","れいわ新選組"="率_reiwa",
+                      "減税日本・ゆうこく連合"="率_zei")
+rate_key_act4   <- c("チームみらい"="得票率_mirai","参政党"="得票率_sansei",
+                      "日本保守党"="得票率_hoshu","れいわ新選組"="得票率_reiwa",
+                      "減税日本・ゆうこく連合"="得票率_zei")
+
+wmean_hypo4 <- map_dbl(names(poll_rates4), function(nm) {
+  weighted.mean(df_dist4[[rate_key_hypo4[nm]]], df_dist4$単位合計, na.rm = TRUE)
+}) %>% set_names(names(poll_rates4))
+
+wmean_actual4 <- map_dbl(names(poll_rates4), function(nm) {
+  weighted.mean(df_dist4[[rate_key_act4[nm]]], df_dist4$単位合計, na.rm = TRUE)
+}) %>% set_names(names(poll_rates4))
+
+# z スコア・p 値の計算
+calc_zp4 <- function(rate_obs, poll_rate) {
+  lp_mean <- predict(ols_ref, newdata = data.frame(支持率 = poll_rate))
+  lp_se   <- predict(ols_ref, newdata = data.frame(支持率 = poll_rate),
+                      se.fit = TRUE)$se.fit
+  se_p    <- sqrt(sigma(ols_ref)^2 + lp_se^2)
+  z <- (log(rate_obs) - lp_mean) / se_p
+  list(z = z, p = 1 - pnorm(z))
+}
+
+stat_tbl4 <- tibble(政党 = names(poll_rates4)) %>%
+  mutate(
+    支持率    = poll_rates4[政党],
+    率_実際   = wmean_actual4[政党],
+    率_仮定   = wmean_hypo4[政党],
+    倍率_実際 = 率_実際 / 支持率,
+    倍率_仮定 = 率_仮定 / 支持率,
+    z_実際    = map2_dbl(率_実際, 支持率, ~ calc_zp4(.x, .y)$z),
+    z_仮定    = map2_dbl(率_仮定, 支持率, ~ calc_zp4(.x, .y)$z),
+    p_実際    = map2_dbl(率_実際, 支持率, ~ calc_zp4(.x, .y)$p),
+    p_仮定    = map2_dbl(率_仮定, 支持率, ~ calc_zp4(.x, .y)$p),
+    判定_実際 = ifelse(p_実際 < 0.05, "異常", "正常"),
+    判定_仮定 = ifelse(p_仮定 < 0.05, "異常", "正常")
+  )
+
+stat_tbl4 %>%
+  mutate(
+    支持率    = paste0(支持率, "%"),
+    率_実際   = sprintf("%.2f%%", 率_実際),
+    率_仮定   = sprintf("%.2f%%", 率_仮定),
+    倍率_実際 = sprintf("× %.1f", 倍率_実際),
+    倍率_仮定 = sprintf("× %.1f", 倍率_仮定),
+    z_実際    = sprintf("%.2f σ", z_実際),
+    z_仮定    = sprintf("%.2f σ", z_仮定),
+    p_実際    = sprintf("%.4f",   p_実際),
+    p_仮定    = sprintf("%.4f",   p_仮定)
+  ) %>%
+  select(政党, 支持率,
+         率_実際, 倍率_実際, z_実際, p_実際, 判定_実際,
+         率_仮定, 倍率_仮定, z_仮定, p_仮定, 判定_仮定) %>%
+  datatable(
+    rownames = FALSE,
+    colnames = c("政党","支持率",
+                 "得票率（実際）","倍率（実際）","z（実際）","p（実際）","判定（実際）",
+                 "得票率（仮定）","倍率（仮定）","z（仮定）","p（仮定）","判定（仮定）"),
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("判定_実際",
+    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
+    fontWeight      = "bold",
+    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
+  ) %>%
+  formatStyle("判定_仮定",
+    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
+    fontWeight      = "bold",
+    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
+  ) %>%
+  formatStyle("政党",
+    fontWeight      = styleEqual("チームみらい", "bold"),
+    backgroundColor = styleEqual("チームみらい", "#E8F4F8")
+  )
+```
+
+## 8-3. 散布図：全党の実際 → 仮定の移動
+
+```{r dist4_scatter, fig.height=7}
+party_colors5 <- c(
+  "チームみらい（実際）"   = "#E74C3C",   "チームみらい（仮定）"   = "#FADBD8",
+  "参政党（実際）"         = "#E07B00",   "参政党（仮定）"         = "#FAD7A0",
+  "日本保守党（実際）"     = "#6D4C41",   "日本保守党（仮定）"     = "#BCAAA4",
+  "れいわ新選組（実際）"   = "#AD1457",   "れいわ新選組（仮定）"   = "#F48FB1",
+  "減税日本・ゆうこく連合（実際）" = "#00838F", "減税日本・ゆうこく連合（仮定）" = "#80DEEA",
+  "その他政党"             = "#AAAAAA"
+)
+
+actual_pts4 <- merged %>%
+  mutate(type = case_when(
+    政党 %in% names(poll_rates4) ~ paste0(政党, "（実際）"),
+    TRUE ~ "その他政党"
+  ), ラベル = 政党)
+
+hypo_pts4 <- tibble(
+  政党           = names(poll_rates4),
+  支持率         = poll_rates4[政党],
+  東京平均得票率 = wmean_hypo4[政党],
+  ラベル         = paste0(str_replace(政党, "チームみらい", "みらい"), "\n（仮定）"),
+  type           = paste0(政党, "（仮定）"),
+  is_mirai       = FALSE
+)
+
+arrow_df4 <- tibble(
+  政党   = names(poll_rates4),
+  支持率 = poll_rates4[政党],
+  y_from = wmean_actual4[政党],
+  y_to   = wmean_hypo4[政党]
+)
+
+ggplot() +
+  geom_ribbon(data = ribbon2, aes(x = 支持率, ymin = lwr, ymax = upr),
+              fill = "#AED6F1", alpha = 0.22, inherit.aes = FALSE) +
+  geom_line(data = ribbon2, aes(x = 支持率, y = fit),
+            color = "#2C5F7A", linewidth = 1.0, linetype = "dashed",
+            inherit.aes = FALSE) +
+  geom_segment(data = arrow_df4,
+               aes(x = 支持率, xend = 支持率, y = y_from, yend = y_to),
+               arrow = arrow(length = unit(0.12, "cm"), type = "closed"),
+               color = "#555555", linewidth = 0.7) +
+  geom_point(data = filter(actual_pts4, type == "その他政党"),
+             aes(x = 支持率, y = 東京平均得票率),
+             color = "#AAAAAA", size = 3.5, alpha = 0.7) +
+  ggrepel::geom_text_repel(data = filter(actual_pts4, type == "その他政党"),
+                            aes(x = 支持率, y = 東京平均得票率, label = ラベル),
+                            size = 2.6, color = "#888888", max.overlaps = 8) +
+  geom_point(data = filter(actual_pts4, type != "その他政党"),
+             aes(x = 支持率, y = 東京平均得票率, color = type),
+             size = 5.5, shape = 16, alpha = 0.95) +
+  geom_point(data = hypo_pts4,
+             aes(x = 支持率, y = 東京平均得票率, color = type),
+             size = 5.5, shape = 15, alpha = 0.95) +
+  ggrepel::geom_text_repel(data = filter(actual_pts4, type != "その他政党"),
+                            aes(x = 支持率, y = 東京平均得票率, label = ラベル),
+                            size = 3.0, color = "#2C3E50", fontface = "bold",
+                            max.overlaps = 15) +
+  ggrepel::geom_text_repel(data = hypo_pts4,
+                            aes(x = 支持率, y = 東京平均得票率, label = ラベル),
+                            size = 2.6, color = "#555555", max.overlaps = 15) +
+  scale_color_manual(values = party_colors5, guide = "none") +
+  scale_x_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(0.2, 0.5, 1, 2, 5, 10, 20)) +
+  scale_y_log10(labels = function(x) paste0(x, "%"),
+                breaks  = c(0.5, 1, 2, 5, 10, 20, 30, 50)) +
+  labs(title    = "「90%按分」仮定前後の各党得票率（対数スケール）",
+       subtitle = "帯＝95%予測区間　●＝実際　■＝仮定後　矢印＝移動方向",
+       x = "時事通信 支持率（%、対数軸）", y = "東京 平均得票率（%、対数軸）") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title       = element_text(face = "bold"),
+        plot.subtitle    = element_text(color = "#555555"),
+        panel.grid.minor = element_blank())
+```
+
+## 8-4. 市区町村別：5党の変化ドット
+
+```{r dist4_city, fig.height=10, fig.width=12}
+rate_cols_act4  <- c("得票率_mirai"="チームみらい","得票率_sansei"="参政党",
+                      "得票率_hoshu"="日本保守党","得票率_reiwa"="れいわ新選組",
+                      "得票率_zei"="減税日本・ゆうこく連合")
+rate_cols_hyp4  <- c("率_mirai"="チームみらい","率_sansei"="参政党",
+                      "率_hoshu"="日本保守党","率_reiwa"="れいわ新選組",
+                      "率_zei"="減税日本・ゆうこく連合")
+
+dist4_long <- bind_rows(
+  df_dist4 %>%
+    select(市区町村, 単位合計, starts_with("得票率_")) %>%
+    pivot_longer(-c(市区町村, 単位合計), names_to = "key", values_to = "得票率") %>%
+    mutate(政党 = recode(key, !!!rate_cols_act4), シナリオ = "実際"),
+  df_dist4 %>%
+    select(市区町村, 単位合計,
+           率_mirai, 率_sansei, 率_hoshu, 率_reiwa, 率_zei) %>%
+    pivot_longer(-c(市区町村, 単位合計), names_to = "key", values_to = "得票率") %>%
+    mutate(政党 = recode(key, !!!rate_cols_hyp4), シナリオ = "仮定（90%按分後）")
+) %>%
+  filter(!is.na(得票率)) %>%
+  mutate(
+    政党     = factor(政党, levels = c("チームみらい","減税日本・ゆうこく連合",
+                                       "参政党","れいわ新選組","日本保守党")),
+    市区町村 = fct_reorder(
+      市区町村,
+      ifelse(政党 == "チームみらい" & シナリオ == "実際", 得票率, NA_real_),
+      .fun = function(x) mean(x, na.rm = TRUE)
+    )
+  )
+
+# 各党の95%予測区間上限
+pi_upper4 <- map_dbl(names(poll_rates4), function(nm) {
+  pr <- poll_rates4[nm]
+  exp(predict(ols_ref, newdata = data.frame(支持率 = pr),
+              interval = "prediction")[, "upr"])
+}) %>% set_names(names(poll_rates4))
+
+pi_lines4 <- tibble(
+  政党   = names(pi_upper4),
+  pi_upr = pi_upper4
+) %>%
+  mutate(政党 = factor(政党, levels = levels(dist4_long$政党)))
+
+ggplot(dist4_long, aes(x = 得票率, y = 市区町村,
+                        color = シナリオ, shape = シナリオ)) +
+  geom_line(aes(group = interaction(市区町村, 政党)),
+            color = "#DDDDDD", linewidth = 0.4) +
+  geom_point(size = 1.8, alpha = 0.85) +
+  geom_vline(data = pi_lines4, aes(xintercept = pi_upr),
+             linetype = "dashed", color = "#2C5F7A", linewidth = 0.6) +
+  scale_color_manual(values = c("実際"="#5D8AA8","仮定（90%按分後）"="#E07B00"),
+                     name = NULL) +
+  scale_shape_manual(values = c("実際"=16,"仮定（90%按分後）"=15), name = NULL) +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  facet_wrap(~ 政党, ncol = 5, scales = "free_x") +
+  labs(title    = "市区町村別：5党の得票率 実際 vs 仮定（90%按分後）",
+       subtitle = "破線＝各党の95%予測区間上限（世論調査支持率ベース）　■が破線を超えると統計的に異常",
+       x = "得票率（%）", y = NULL) +
+  theme_minimal(base_size = 10) +
+  theme(plot.title         = element_text(face = "bold", size = 12),
+        plot.subtitle      = element_text(color = "#555555", size = 8.5),
+        legend.position    = "top",
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor   = element_blank(),
+        strip.text         = element_text(face = "bold", size = 10))
+```
+
+## 8-5. 総括：5党すべての統計的判定
+
+```{r dist4_summary}
+final4 <- stat_tbl4 %>%
+  mutate(
+    pi_upr_val      = pi_upper4[政党],
+    pct_over_actual = map2_dbl(政党, pi_upr_val, ~ {
+      mean(df_dist4[[rate_key_act4[.x]]] > .y, na.rm = TRUE) * 100
+    }),
+    pct_over_hypo   = map2_dbl(政党, pi_upr_val, ~ {
+      mean(df_dist4[[rate_key_hypo4[.x]]] > .y, na.rm = TRUE) * 100
+    })
+  )
+
+final4 %>%
+  mutate(
+    支持率         = paste0(支持率, "%"),
+    率_実際        = sprintf("%.2f%%", 率_実際),
+    率_仮定        = sprintf("%.2f%%", 率_仮定),
+    z_実際         = sprintf("%.2f σ", z_実際),
+    z_仮定         = sprintf("%.2f σ", z_仮定),
+    p_実際         = sprintf("%.4f",   p_実際),
+    p_仮定         = sprintf("%.4f",   p_仮定),
+    超過率_実際    = sprintf("%.0f%%", pct_over_actual),
+    超過率_仮定    = sprintf("%.0f%%", pct_over_hypo)
+  ) %>%
+  select(政党, 支持率,
+         率_実際, z_実際, p_実際, 超過率_実際, 判定_実際,
+         率_仮定, z_仮定, p_仮定, 超過率_仮定, 判定_仮定) %>%
+  datatable(
+    rownames = FALSE,
+    colnames = c("政党","支持率",
+                 "得票率（実際）","z（実際）","p（実際）","PI超過率（実際）","判定（実際）",
+                 "得票率（仮定）","z（仮定）","p（仮定）","PI超過率（仮定）","判定（仮定）"),
+    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
+    class    = "stripe hover compact"
+  ) %>%
+  formatStyle("判定_実際",
+    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
+    fontWeight      = "bold",
+    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
+  ) %>%
+  formatStyle("判定_仮定",
+    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
+    fontWeight      = "bold",
+    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
+  ) %>%
+  formatStyle("政党",
+    fontWeight      = styleEqual("チームみらい", "bold"),
+    backgroundColor = styleEqual("チームみらい", "#E8F4F8")
+  )
+```
+
+```{r dist4_text, echo=FALSE}
+n_abn4  <- sum(final4$判定_仮定 == "異常")
+n_nor4  <- sum(final4$判定_仮定 == "正常")
+abn4    <- final4 %>% filter(判定_仮定 == "異常") %>% pull(政党)
+mirai_j <- final4 %>% filter(政党 == "チームみらい") %>% pull(判定_仮定)
+```
+
+<div class="callout-result">
+**総括**
+
+「みらい票90%を4党按分」シナリオでは：
+
+- **異常と判定された政党（仮定後）**: `r if(n_abn4 == 0) "なし（全党が正常範囲）" else paste0(n_abn4, "党（", paste(abn4, collapse = "・"), "）")`
+- **正常範囲と判定された政党（仮定後）**: `r n_nor4`党
+- **チームみらい（残票10%）の判定**: `r mirai_j`
+
+`r if(n_abn4 == 0) "全党が正常範囲に収まります。ただし「統計的にあり得ない水準ではない」という意味に過ぎず、按分が実際に行われた証拠ではありません。" else paste0("仮定後の**", paste(abn4, collapse = "・"), "**が統計的に異常です。このシナリオは移転先の政党にも矛盾を生じさせるため、単純な按分移転では説明がつきにくいです。")`
+</div>
+
+---
+
+*分析実施日: `r Sys.Date()` / データ: 2026_衆院選_比例_東京_r.xlsx（出典: 東京都選挙管理委員会 r08shu_hkai_036.pdf）/ 時事通信世論調査（2026年1月15日時点）*

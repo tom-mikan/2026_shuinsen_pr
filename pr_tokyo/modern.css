@@ -1,0 +1,482 @@
+/* ============================================================
+   MODERN REPORT DESIGN
+   チームみらい 統計分析レポート
+   ============================================================ */
+
+/* ----- Base ----- */
+body {
+  font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+  background: #EEF2F7;
+  color: #1E2A3B;
+  font-size: 14.5px;
+  line-height: 1.82;
+}
+
+.main-container {
+  max-width: 1000px;
+  background: #ffffff;
+  box-shadow: 0 4px 40px rgba(0, 0, 0, 0.10);
+  border-radius: 14px;
+  margin: 24px auto 40px;
+  padding: 40px 52px;
+}
+
+/* ----- Navbar ----- */
+.navbar-default {
+  background: linear-gradient(135deg, #0f0c29 0%, #302b63 60%, #24243e 100%) !important;
+  border: none !important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.40) !important;
+  min-height: 54px;
+}
+
+.navbar-default .navbar-brand {
+  color: #ecf0f1 !important;
+  font-weight: 700;
+  font-size: 1.05em;
+  letter-spacing: 0.02em;
+}
+
+.navbar-default .navbar-nav > li > a {
+  color: #AED6F1 !important;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.navbar-default .navbar-nav > li > a:hover {
+  color: #ffffff !important;
+}
+
+/* ----- Headings ----- */
+h1 {
+  font-size: 1.75em;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin-top: 46px;
+  margin-bottom: 6px;
+  padding-bottom: 12px;
+}
+
+h1::after {
+  content: '';
+  display: block;
+  height: 3px;
+  background: linear-gradient(90deg, #3498DB 0%, #9B59B6 60%, transparent 100%);
+  border-radius: 2px;
+  margin-top: 10px;
+}
+
+h2 {
+  font-size: 1.22em;
+  font-weight: 700;
+  color: #2C3E50;
+  padding: 4px 0 4px 14px;
+  border-left: 4px solid #3498DB;
+  margin-top: 32px;
+  margin-bottom: 12px;
+}
+
+h3 {
+  font-size: 1.03em;
+  font-weight: 600;
+  color: #34495e;
+  margin-top: 22px;
+  margin-bottom: 10px;
+}
+
+h4 {
+  font-size: 0.92em;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ----- Horizontal rule ----- */
+hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #CBD5E0, transparent);
+  margin: 40px 0;
+}
+
+/* ----- Table of Contents ----- */
+#TOC,
+.tocify-wrapper,
+.tocify {
+  background: #ffffff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.10) !important;
+  font-size: 0.875em;
+}
+
+#TOC > ul {
+  padding-left: 0;
+}
+
+#TOC li,
+.tocify li {
+  list-style: none;
+  padding: 1px 0;
+}
+
+/* 第1階層リンク */
+#TOC a,
+.tocify-item > a {
+  color: #1E2A3B !important;
+  text-decoration: none !important;
+  font-weight: 500;
+  display: block;
+  padding: 5px 14px;
+  border-radius: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+#TOC a:hover,
+.tocify-item > a:hover {
+  background: #EBF5FB !important;
+  color: #2471A3 !important;
+}
+
+/* アクティブ項目 */
+.tocify-item.active > a,
+.tocify-item.active > a:hover {
+  background: linear-gradient(90deg, #EBF5FB, #F0F9FF) !important;
+  color: #1A5276 !important;
+  font-weight: 700;
+  border-left: 3px solid #3498DB;
+  padding-left: 11px;
+}
+
+/* 第2階層 */
+#TOC ul ul {
+  padding-left: 12px;
+}
+
+#TOC ul ul a {
+  color: #34495e !important;
+  font-size: 0.95em;
+  font-weight: 400;
+}
+
+/* tocify のサブ階層 */
+.tocify-subheader {
+  background: #F8FAFC !important;
+  border-left: 2px solid #D5E8F7 !important;
+  margin-left: 10px;
+}
+
+.tocify-subheader .tocify-item > a {
+  color: #2C3E50 !important;
+  font-size: 0.93em;
+  padding: 4px 14px;
+}
+
+.tocify-subheader .tocify-item.active > a {
+  color: #1A5276 !important;
+  font-weight: 600;
+}
+
+/* ----- Tabs ----- */
+.nav-tabs {
+  border-bottom: 2px solid #E2E8F0;
+  margin-bottom: 0;
+}
+
+.nav-tabs > li > a {
+  border: none !important;
+  border-bottom: 3px solid transparent !important;
+  color: #718096;
+  font-weight: 500;
+  font-size: 0.91em;
+  padding: 9px 18px;
+  border-radius: 0 !important;
+  margin-bottom: -2px;
+  transition: all 0.2s ease;
+  background: transparent !important;
+}
+
+.nav-tabs > li > a:hover {
+  border-bottom-color: #AED6F1 !important;
+  color: #3498DB;
+}
+
+.nav-tabs > li.active > a,
+.nav-tabs > li.active > a:hover,
+.nav-tabs > li.active > a:focus {
+  border: none !important;
+  border-bottom: 3px solid #2471A3 !important;
+  color: #2471A3 !important;
+  font-weight: 700;
+  background: transparent !important;
+}
+
+.tab-content {
+  padding: 20px 0 4px;
+}
+
+/* ----- Code folding button ----- */
+button.btn.code-folding-btn {
+  background: linear-gradient(135deg, #2C3E50, #34495E);
+  color: #ecf0f1;
+  border: none;
+  border-radius: 20px;
+  font-size: 0.76em;
+  padding: 3px 14px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.20);
+  transition: all 0.2s ease;
+}
+
+button.btn.code-folding-btn:hover {
+  background: linear-gradient(135deg, #1a252f, #2C3E50);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.28);
+  transform: translateY(-1px);
+  color: #ffffff;
+}
+
+/* ----- Inline code ----- */
+code {
+  background: #F0F4F8;
+  color: #C0392B;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+
+/* ----- Tables (kable / kableExtra) ----- */
+/* border-collapse は separate のまま維持し border-spacing:0 で視覚的に collapse と同等にする。
+   これで table 要素自体への border-radius + overflow:hidden が効く。            */
+table {
+  font-size: 0.90em;
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.07);
+  width: 100%;
+}
+
+table th {
+  background: linear-gradient(135deg, #2C3E50, #34495E) !important;
+  color: #ffffff !important;
+  font-weight: 600;
+  padding: 10px 14px !important;
+  border-top: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-bottom: none !important;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* 角丸はヘッダセル側に付ける（separate モードでは個々のセルに効く） */
+table thead tr:first-child th:first-child { border-top-left-radius: 10px; }
+table thead tr:first-child th:last-child  { border-top-right-radius: 10px; }
+
+table td {
+  padding: 9px 14px;
+  border-top: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-bottom: 1px solid #EAECEF !important;
+  vertical-align: middle;
+}
+
+/* 最終行の下ボーダーは不要 */
+table tbody tr:last-child td {
+  border-bottom: none !important;
+}
+
+.table-striped > tbody > tr:nth-of-type(odd) {
+  background: #F8FAFC;
+}
+
+.table-hover > tbody > tr:hover {
+  background: #EBF5FB !important;
+  transition: background 0.15s;
+}
+
+/* ----- DataTables (DT) ----- */
+.dataTables_wrapper {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.07);
+}
+
+table.dataTable {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+table.dataTable thead th {
+  background: linear-gradient(135deg, #2C3E50, #34495E) !important;
+  color: #ffffff !important;
+  border-bottom: none !important;
+  padding: 10px 14px !important;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+table.dataTable.stripe tbody tr.odd {
+  background: #F8FAFC;
+}
+
+table.dataTable.hover tbody tr:hover {
+  background: #EBF5FB !important;
+  transition: background 0.15s;
+}
+
+table.dataTable tbody td {
+  padding: 9px 14px;
+  border-top: 1px solid #F0F4F8 !important;
+  border-left: none !important;
+  border-right: none !important;
+}
+
+/* ----- Callout boxes ----- */
+.callout-box {
+  background: linear-gradient(135deg, #EBF5FB 0%, #F0F9FF 100%);
+  border-left: 4px solid #3498DB;
+  padding: 14px 20px;
+  margin: 20px 0;
+  border-radius: 0 10px 10px 0;
+  box-shadow: 0 2px 12px rgba(52, 152, 219, 0.12);
+  font-size: 0.95em;
+}
+
+.callout-warn {
+  background: linear-gradient(135deg, #FEFCE8 0%, #FFFBEB 100%);
+  border-left: 4px solid #F39C12;
+  padding: 14px 20px;
+  margin: 20px 0;
+  border-radius: 0 10px 10px 0;
+  box-shadow: 0 2px 12px rgba(243, 156, 18, 0.12);
+  font-size: 0.95em;
+}
+
+.callout-result {
+  background: linear-gradient(135deg, #FDECEA 0%, #FEF2F2 100%);
+  border-left: 4px solid #E74C3C;
+  padding: 14px 20px;
+  margin: 20px 0;
+  border-radius: 0 10px 10px 0;
+  box-shadow: 0 2px 12px rgba(231, 76, 60, 0.12);
+  font-size: 0.95em;
+}
+
+.callout-ok {
+  background: linear-gradient(135deg, #D5F5E3 0%, #EAFAF1 100%);
+  border-left: 4px solid #27AE60;
+  padding: 14px 20px;
+  margin: 20px 0;
+  border-radius: 0 10px 10px 0;
+  box-shadow: 0 2px 12px rgba(39, 174, 96, 0.12);
+  font-size: 0.95em;
+}
+
+/* ----- Chat bubbles ----- */
+.chat-wrap { margin: 26px 0; }
+
+.chat-row {
+  display: flex;
+  align-items: flex-start;
+  margin: 12px 0;
+  gap: 12px;
+}
+
+.chat-row.right { flex-direction: row-reverse; }
+
+.chat-avatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.45em;
+  flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14);
+}
+
+.chat-avatar.bayes {
+  background: linear-gradient(135deg, #D6EAF8, #AED6F1);
+}
+
+.chat-avatar.mira {
+  background: linear-gradient(135deg, #D5F5E3, #A9DFBF);
+}
+
+.chat-body { max-width: 80%; }
+
+.chat-name {
+  font-size: 0.76em;
+  font-weight: 700;
+  margin-bottom: 5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chat-name.bayes { color: #1A5276; }
+.chat-name.mira  { color: #1E8449; }
+
+.chat-bubble {
+  padding: 12px 17px;
+  border-radius: 18px;
+  font-size: 0.91em;
+  line-height: 1.72;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
+}
+
+.chat-bubble.bayes {
+  background: linear-gradient(135deg, #EBF5FB, #D6EAF8);
+  border: 1px solid #AED6F1;
+  border-top-left-radius: 4px;
+}
+
+.chat-bubble.mira {
+  background: linear-gradient(135deg, #EAFAF1, #D5F5E3);
+  border: 1px solid #A9DFBF;
+  border-top-right-radius: 4px;
+}
+
+/* ----- Plot outputs ----- */
+img.plot-output,
+p > img {
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.09);
+  display: block;
+  margin: 12px auto;
+}
+
+/* ----- Math ----- */
+.math.display {
+  background: #F8FAFC;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border-left: 3px solid #9B59B6;
+  overflow-x: auto;
+}
+
+/* ----- Blockquote ----- */
+blockquote {
+  border-left: 4px solid #9B59B6;
+  background: linear-gradient(135deg, #F5EEF8 0%, #EDE7F6 100%);
+  padding: 12px 18px;
+  border-radius: 0 10px 10px 0;
+  font-style: normal;
+  color: #4a235a;
+  box-shadow: 0 2px 10px rgba(155, 89, 182, 0.10);
+  margin: 16px 0;
+}
+
+/* ----- Footer area ----- */
+p:last-of-type > em {
+  color: #A0AEC0;
+  font-size: 0.84em;
+}
+
+/* ----- Scrollbar (WebKit) ----- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #F0F4F8; border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: #CBD5E0; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #A0AEC0; }
