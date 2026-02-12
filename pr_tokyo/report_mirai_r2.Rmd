@@ -36,6 +36,7 @@ library(patchwork)
 library(knitr)
 library(kableExtra)
 library(DT)
+library(mcmc)   # Metropolis アルゴリズム（metrop関数）
 set.seed(2026)
 ```
 
@@ -394,6 +395,7 @@ merged <- poll %>%
     倍率      = 東京平均得票率 / 支持率,
     is_mirai  = 政党 == "チームみらい"
   )
+
 ```
 
 ## 1-0. 元データ：市区町村別 得票数・得票率
@@ -956,6 +958,11 @@ $$\log(\text{東京得票率}_i) = \alpha + \beta \times \log(\text{支持率}_i
 </div>
 
 ```{r mcmc}
+ref   <- merged %>% filter(!is_mirai)
+y_ref <- log(ref$東京平均得票率)
+x_ref <- log(ref$支持率)
+
+# 対数事後分布（mcmc::metrop に渡す形式）
 log_posterior <- function(params, y, x) {
   a <- params[1]; b <- params[2]; ls <- params[3]
   s <- exp(ls)
@@ -965,28 +972,22 @@ log_posterior <- function(params, y, x) {
     dnorm(ls, 0, 2, log = TRUE)
 }
 
-mh_sampler <- function(y, x, n_iter = 200000, n_warmup = 50000,
-                       step = c(0.3, 0.15, 0.15)) {
-  ols <- lm(y ~ x)
-  cur <- c(coef(ols)[1], coef(ols)[2], log(sigma(ols)))
-  ch  <- matrix(NA_real_, n_iter, 3,
-                dimnames = list(NULL, c("alpha","beta","log_sigma")))
-  lp  <- log_posterior(cur, y, x)
-  for (i in seq_len(n_iter)) {
-    prop <- cur + rnorm(3, 0, step)
-    lp2  <- log_posterior(prop, y, x)
-    if (log(runif(1)) < lp2 - lp) { cur <- prop; lp <- lp2 }
-    ch[i,] <- cur
-  }
-  as.data.frame(ch[(n_warmup+1):n_iter, ])
-}
+# OLS推定値を初期値に使用
+ols_init <- lm(y_ref ~ x_ref)
+init     <- c(coef(ols_init)[1], coef(ols_init)[2], log(sigma(ols_init)))
 
-ref <- merged %>% filter(!is_mirai)
-y_ref <- log(ref$東京平均得票率)
-x_ref <- log(ref$支持率)
+# mcmc::metrop でウォームアップ（50,000 ステップ）→ 本サンプリング（150,000 ステップ）
+# scale はパラメータごとのプロポーザル幅（提案分布の標準偏差）
+warmup_run <- mcmc::metrop(log_posterior, initial = init,
+                            nbatch = 50000, scale = c(0.3, 0.15, 0.15),
+                            y = y_ref, x = x_ref)
+mcmc_run   <- mcmc::metrop(warmup_run, nbatch = 150000,
+                            y = y_ref, x = x_ref)
 
-samples <- mh_sampler(y_ref, x_ref)
-sigma_med <- median(exp(samples$log_sigma))
+samples <- as.data.frame(mcmc_run$batch)
+names(samples) <- c("alpha", "beta", "log_sigma")
+sigma_med   <- median(exp(samples$log_sigma))
+accept_rate <- mcmc_run$accept
 ```
 
 ```{r param_summary}
@@ -1024,17 +1025,19 @@ post_tbl %>%
 ```{r convergence_note, results='asis'}
 half1 <- samples[1:(nrow(samples)%/%2),]
 half2 <- samples[(nrow(samples)%/%2+1):nrow(samples),]
-diff_a <- abs(mean(half1$alpha) - mean(half2$alpha))
-diff_b <- abs(mean(half1$beta)  - mean(half2$beta))
+diff_a    <- abs(mean(half1$alpha) - mean(half2$alpha))
+diff_b    <- abs(mean(half1$beta)  - mean(half2$beta))
 converged <- diff_a < 0.01 & diff_b < 0.01
+# 採択率：0.2〜0.5 が理想的（Metropolis 法の目安）
+accept_ok <- accept_rate >= 0.15 & accept_rate <= 0.60
 
 cat(sprintf(
-  '<div class="%s"><strong>収束診断：</strong>チェーン前半・後半の平均差 — α: %.4f, β: %.4f。%s</div>',
-  ifelse(converged, "callout-ok", "callout-warn"),
-  diff_a, diff_b,
-  ifelse(converged,
-         "差が十分小さく、MCMCは収束していると判断できます。",
-         "差がやや大きく、解釈に注意が必要です。")
+  '<div class="%s"><strong>収束診断（mcmc::metrop）：</strong>採択率 %.1f%%（目安: 20〜50%%）。チェーン前半・後半の平均差 — α: %.4f, β: %.4f。%s</div>',
+  ifelse(converged && accept_ok, "callout-ok", "callout-warn"),
+  accept_rate * 100, diff_a, diff_b,
+  ifelse(converged && accept_ok,
+         "採択率・収束ともに良好です。",
+         "採択率または収束に注意が必要です。scale パラメータの調整を検討してください。")
 ))
 ```
 
@@ -1062,7 +1065,6 @@ ggplot() +
   geom_line(data = fan_df,
             aes(x = x, y = y, group = sid),
             color = "#AED6F1", alpha = 0.12, linewidth = 0.5) +
-  # 事後中央値の直線
   {
     med_df <- tibble(x = exp(x_seq),
                      y = exp(median(samples$alpha) +
@@ -1882,430 +1884,6 @@ z スコア = **`r sprintf("%.2f", mirai_z)` σ**
 </div>
 
 ---
-
-# 7. 拡張仮説：みらい票90%を「参政・保守・れいわ・減税」に按分した場合 {.tabset}
-
-<div class="callout-box">
-**仮説の設定**
-
-チームみらいの票の90%を、**参政党・日本保守党・れいわ新選組・減税日本・ゆうこく連合**の4党に
-各市区町村の実際の得票比率で**按分**した場合、
-
-1. 各受取党の得票率は統計的に説明できるか？
-2. 残された チームみらい（10%）の得票率は統計的に説明できるか？
-
-の2点を同じ回帰モデルで検定します。
-</div>
-
-## 7-1. 市区町村別 按分計算
-
-```{r dist4_calc}
-dist_parties  <- c("参政党", "日本保守党", "れいわ新選組", "減税日本・ゆうこく連合")
-all5_parties  <- c("チームみらい", dist_parties)
-transfer_r4   <- 0.9
-
-# 5党の市区町村別データをワイド形式に
-df_wide5 <- df_unit %>%
-  filter(政党 %in% all5_parties) %>%
-  select(市区町村, 政党, 票数, 単位合計, 得票率) %>%
-  pivot_wider(names_from = 政党,
-              values_from = c(票数, 得票率),
-              names_sep   = "___")
-
-names(df_wide5) <- names(df_wide5) %>%
-  str_replace("___", "_") %>%
-  str_replace_all("チームみらい",         "mirai") %>%
-  str_replace_all("参政党",               "sansei") %>%
-  str_replace_all("日本保守党",           "hoshu") %>%
-  str_replace_all("れいわ新選組",         "reiwa") %>%
-  str_replace_all("減税日本・ゆうこく連合", "zei")
-
-# 按分計算（4党合計票数をシェアの分母とする）
-df_dist4 <- df_wide5 %>%
-  mutate(
-    base4          = 票数_sansei + 票数_hoshu + 票数_reiwa + 票数_zei,
-    transfer_pool  = round(票数_mirai * transfer_r4),
-    add_sansei     = round(transfer_pool * 票数_sansei / base4),
-    add_hoshu      = round(transfer_pool * 票数_hoshu  / base4),
-    add_reiwa      = round(transfer_pool * 票数_reiwa  / base4),
-    # 端数を zei に吸収
-    add_zei        = transfer_pool - add_sansei - add_hoshu - add_reiwa,
-    新_mirai       = 票数_mirai   - transfer_pool,
-    新_sansei      = 票数_sansei  + add_sansei,
-    新_hoshu       = 票数_hoshu   + add_hoshu,
-    新_reiwa       = 票数_reiwa   + add_reiwa,
-    新_zei         = 票数_zei     + add_zei,
-    率_mirai       = round(新_mirai  / 単位合計 * 100, 2),
-    率_sansei      = round(新_sansei / 単位合計 * 100, 2),
-    率_hoshu       = round(新_hoshu  / 単位合計 * 100, 2),
-    率_reiwa       = round(新_reiwa  / 単位合計 * 100, 2),
-    率_zei         = round(新_zei    / 単位合計 * 100, 2)
-  )
-
-# 東京全体サマリー
-total_bal4 <- df_unit %>%
-  group_by(市区町村) %>% summarise(合計 = first(単位合計), .groups = "drop") %>%
-  pull(合計) %>% sum()
-
-poll_rates4 <- c(
-  "チームみらい" = 0.2, "参政党" = 3.4, "日本保守党" = 1.1,
-  "れいわ新選組" = 0.9, "減税日本・ゆうこく連合" = 0.3  # 時事通信調査未掲載のため仮置き0.3%
-)
-
-key_actual4 <- c("チームみらい"="票数_mirai","参政党"="票数_sansei",
-                  "日本保守党"="票数_hoshu","れいわ新選組"="票数_reiwa",
-                  "減税日本・ゆうこく連合"="票数_zei")
-key_hypo4   <- c("チームみらい"="新_mirai","参政党"="新_sansei",
-                  "日本保守党"="新_hoshu","れいわ新選組"="新_reiwa",
-                  "減税日本・ゆうこく連合"="新_zei")
-
-summary4 <- tibble(政党 = names(poll_rates4)) %>%
-  mutate(
-    支持率    = poll_rates4[政党],
-    票数_実際 = map_dbl(政党, ~ sum(df_dist4[[key_actual4[.x]]], na.rm = TRUE)),
-    票数_仮定 = map_dbl(政党, ~ sum(df_dist4[[key_hypo4[.x]]],   na.rm = TRUE)),
-    率_実際   = 票数_実際 / total_bal4 * 100,
-    率_仮定   = 票数_仮定 / total_bal4 * 100,
-    倍率_実際 = 率_実際 / 支持率,
-    倍率_仮定 = 率_仮定 / 支持率
-  )
-
-summary4 %>%
-  mutate(
-    票数_実際 = formatC(票数_実際, format = "d", big.mark = ","),
-    票数_仮定 = formatC(票数_仮定, format = "d", big.mark = ","),
-    率_実際   = sprintf("%.2f%%", 率_実際),
-    率_仮定   = sprintf("%.2f%%", 率_仮定),
-    倍率_実際 = sprintf("× %.1f", 倍率_実際),
-    倍率_仮定 = sprintf("× %.1f", 倍率_仮定),
-    支持率    = paste0(支持率, "%")
-  ) %>%
-  select(政党, 支持率, 票数_実際, 率_実際, 倍率_実際, 票数_仮定, 率_仮定, 倍率_仮定) %>%
-  datatable(
-    rownames = FALSE,
-    colnames = c("政党","世論調査支持率",
-                 "票数（実際）","得票率（実際）","倍率（実際）",
-                 "票数（仮定）","得票率（仮定）","倍率（仮定）"),
-    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
-    class    = "stripe hover compact"
-  ) %>%
-  formatStyle("政党",
-    fontWeight      = styleEqual("チームみらい", "bold"),
-    backgroundColor = styleEqual("チームみらい", "#E8F4F8")
-  )
-```
-
-<div class="callout-result">
-90%を4党に按分するとチームみらいの残票は約 **`r sprintf("%.1f%%", filter(summary4, 政党=="チームみらい")$率_仮定)`** になります。
-最大受取党は**`r filter(summary4, 政党!="チームみらい") %>% slice_max(率_仮定, n=1) %>% pull(政党)`**で **`r filter(summary4, 政党!="チームみらい") %>% slice_max(率_仮定, n=1) %>% pull(率_仮定) %>% sprintf("%.1f%%", .)`** となります。
-</div>
-
-## 7-2. 回帰モデルによる各党の妥当性検定
-
-```{r dist4_regression}
-# 各党の加重平均得票率（仮定後）
-rate_key_hypo4  <- c("チームみらい"="率_mirai","参政党"="率_sansei",
-                      "日本保守党"="率_hoshu","れいわ新選組"="率_reiwa",
-                      "減税日本・ゆうこく連合"="率_zei")
-rate_key_act4   <- c("チームみらい"="得票率_mirai","参政党"="得票率_sansei",
-                      "日本保守党"="得票率_hoshu","れいわ新選組"="得票率_reiwa",
-                      "減税日本・ゆうこく連合"="得票率_zei")
-
-wmean_hypo4 <- map_dbl(names(poll_rates4), function(nm) {
-  weighted.mean(df_dist4[[rate_key_hypo4[nm]]], df_dist4$単位合計, na.rm = TRUE)
-}) %>% set_names(names(poll_rates4))
-
-wmean_actual4 <- map_dbl(names(poll_rates4), function(nm) {
-  weighted.mean(df_dist4[[rate_key_act4[nm]]], df_dist4$単位合計, na.rm = TRUE)
-}) %>% set_names(names(poll_rates4))
-
-# z スコア・p 値の計算
-calc_zp4 <- function(rate_obs, poll_rate) {
-  lp_mean <- predict(ols_ref, newdata = data.frame(支持率 = poll_rate))
-  lp_se   <- predict(ols_ref, newdata = data.frame(支持率 = poll_rate),
-                      se.fit = TRUE)$se.fit
-  se_p    <- sqrt(sigma(ols_ref)^2 + lp_se^2)
-  z <- (log(rate_obs) - lp_mean) / se_p
-  list(z = z, p = 1 - pnorm(z))
-}
-
-stat_tbl4 <- tibble(政党 = names(poll_rates4)) %>%
-  mutate(
-    支持率    = poll_rates4[政党],
-    率_実際   = wmean_actual4[政党],
-    率_仮定   = wmean_hypo4[政党],
-    倍率_実際 = 率_実際 / 支持率,
-    倍率_仮定 = 率_仮定 / 支持率,
-    z_実際    = map2_dbl(率_実際, 支持率, ~ calc_zp4(.x, .y)$z),
-    z_仮定    = map2_dbl(率_仮定, 支持率, ~ calc_zp4(.x, .y)$z),
-    p_実際    = map2_dbl(率_実際, 支持率, ~ calc_zp4(.x, .y)$p),
-    p_仮定    = map2_dbl(率_仮定, 支持率, ~ calc_zp4(.x, .y)$p),
-    判定_実際 = ifelse(p_実際 < 0.05, "異常", "正常"),
-    判定_仮定 = ifelse(p_仮定 < 0.05, "異常", "正常")
-  )
-
-stat_tbl4 %>%
-  mutate(
-    支持率    = paste0(支持率, "%"),
-    率_実際   = sprintf("%.2f%%", 率_実際),
-    率_仮定   = sprintf("%.2f%%", 率_仮定),
-    倍率_実際 = sprintf("× %.1f", 倍率_実際),
-    倍率_仮定 = sprintf("× %.1f", 倍率_仮定),
-    z_実際    = sprintf("%.2f σ", z_実際),
-    z_仮定    = sprintf("%.2f σ", z_仮定),
-    p_実際    = sprintf("%.4f",   p_実際),
-    p_仮定    = sprintf("%.4f",   p_仮定)
-  ) %>%
-  select(政党, 支持率,
-         率_実際, 倍率_実際, z_実際, p_実際, 判定_実際,
-         率_仮定, 倍率_仮定, z_仮定, p_仮定, 判定_仮定) %>%
-  datatable(
-    rownames = FALSE,
-    colnames = c("政党","支持率",
-                 "得票率（実際）","倍率（実際）","z（実際）","p（実際）","判定（実際）",
-                 "得票率（仮定）","倍率（仮定）","z（仮定）","p（仮定）","判定（仮定）"),
-    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
-    class    = "stripe hover compact"
-  ) %>%
-  formatStyle("判定_実際",
-    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
-    fontWeight      = "bold",
-    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
-  ) %>%
-  formatStyle("判定_仮定",
-    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
-    fontWeight      = "bold",
-    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
-  ) %>%
-  formatStyle("政党",
-    fontWeight      = styleEqual("チームみらい", "bold"),
-    backgroundColor = styleEqual("チームみらい", "#E8F4F8")
-  )
-```
-
-## 7-3. 散布図：全党の実際 → 仮定の移動
-
-```{r dist4_scatter, fig.height=7}
-nd2     <- tibble(支持率 = exp(seq(log(0.15), log(25), length.out = 300)))
-pred2   <- predict(ols_ref, newdata = list(支持率 = nd2$支持率), interval = "prediction")
-ribbon2 <- bind_cols(nd2, as.data.frame(pred2)) %>%
-  mutate(lwr = exp(lwr), fit = exp(fit), upr = exp(upr))
-
-party_colors5 <- c(
-  "チームみらい（実際）"   = "#E74C3C",   "チームみらい（仮定）"   = "#FADBD8",
-  "参政党（実際）"         = "#E07B00",   "参政党（仮定）"         = "#FAD7A0",
-  "日本保守党（実際）"     = "#6D4C41",   "日本保守党（仮定）"     = "#BCAAA4",
-  "れいわ新選組（実際）"   = "#AD1457",   "れいわ新選組（仮定）"   = "#F48FB1",
-  "減税日本・ゆうこく連合（実際）" = "#00838F", "減税日本・ゆうこく連合（仮定）" = "#80DEEA",
-  "その他政党"             = "#AAAAAA"
-)
-
-actual_pts4 <- merged %>%
-  mutate(type = case_when(
-    政党 %in% names(poll_rates4) ~ paste0(政党, "（実際）"),
-    TRUE ~ "その他政党"
-  ), ラベル = 政党)
-
-hypo_pts4 <- tibble(
-  政党           = names(poll_rates4),
-  支持率         = poll_rates4[政党],
-  東京平均得票率 = wmean_hypo4[政党],
-  ラベル         = paste0(str_replace(政党, "チームみらい", "みらい"), "\n（仮定）"),
-  type           = paste0(政党, "（仮定）"),
-  is_mirai       = FALSE
-)
-
-arrow_df4 <- tibble(
-  政党   = names(poll_rates4),
-  支持率 = poll_rates4[政党],
-  y_from = wmean_actual4[政党],
-  y_to   = wmean_hypo4[政党]
-)
-
-ggplot() +
-  geom_ribbon(data = ribbon2, aes(x = 支持率, ymin = lwr, ymax = upr),
-              fill = "#AED6F1", alpha = 0.22, inherit.aes = FALSE) +
-  geom_line(data = ribbon2, aes(x = 支持率, y = fit),
-            color = "#2C5F7A", linewidth = 1.0, linetype = "dashed",
-            inherit.aes = FALSE) +
-  geom_segment(data = arrow_df4,
-               aes(x = 支持率, xend = 支持率, y = y_from, yend = y_to),
-               arrow = arrow(length = unit(0.12, "cm"), type = "closed"),
-               color = "#555555", linewidth = 0.7) +
-  geom_point(data = filter(actual_pts4, type == "その他政党"),
-             aes(x = 支持率, y = 東京平均得票率),
-             color = "#AAAAAA", size = 3.5, alpha = 0.7) +
-  ggrepel::geom_text_repel(data = filter(actual_pts4, type == "その他政党"),
-                            aes(x = 支持率, y = 東京平均得票率, label = ラベル),
-                            size = 2.6, color = "#888888", max.overlaps = 8) +
-  geom_point(data = filter(actual_pts4, type != "その他政党"),
-             aes(x = 支持率, y = 東京平均得票率, color = type),
-             size = 5.5, shape = 16, alpha = 0.95) +
-  geom_point(data = hypo_pts4,
-             aes(x = 支持率, y = 東京平均得票率, color = type),
-             size = 5.5, shape = 15, alpha = 0.95) +
-  ggrepel::geom_text_repel(data = filter(actual_pts4, type != "その他政党"),
-                            aes(x = 支持率, y = 東京平均得票率, label = ラベル),
-                            size = 3.0, color = "#2C3E50", fontface = "bold",
-                            max.overlaps = 15) +
-  ggrepel::geom_text_repel(data = hypo_pts4,
-                            aes(x = 支持率, y = 東京平均得票率, label = ラベル),
-                            size = 2.6, color = "#555555", max.overlaps = 15) +
-  scale_color_manual(values = party_colors5, guide = "none") +
-  scale_x_log10(labels = function(x) paste0(x, "%"),
-                breaks  = c(0.2, 0.5, 1, 2, 5, 10, 20)) +
-  scale_y_log10(labels = function(x) paste0(x, "%"),
-                breaks  = c(0.5, 1, 2, 5, 10, 20, 30, 50)) +
-  labs(title    = "「90%按分」仮定前後の各党得票率（対数スケール）",
-       subtitle = "帯＝95%予測区間　●＝実際　■＝仮定後　矢印＝移動方向",
-       x = "時事通信 支持率（%、対数軸）", y = "東京 平均得票率（%、対数軸）") +
-  theme_minimal(base_size = 13) +
-  theme(plot.title       = element_text(face = "bold"),
-        plot.subtitle    = element_text(color = "#555555"),
-        panel.grid.minor = element_blank())
-```
-
-## 7-4. 市区町村別：5党の変化ドット
-
-```{r dist4_city, fig.height=10, fig.width=12}
-rate_cols_act4  <- c("得票率_mirai"="チームみらい","得票率_sansei"="参政党",
-                      "得票率_hoshu"="日本保守党","得票率_reiwa"="れいわ新選組",
-                      "得票率_zei"="減税日本・ゆうこく連合")
-rate_cols_hyp4  <- c("率_mirai"="チームみらい","率_sansei"="参政党",
-                      "率_hoshu"="日本保守党","率_reiwa"="れいわ新選組",
-                      "率_zei"="減税日本・ゆうこく連合")
-
-dist4_long <- bind_rows(
-  df_dist4 %>%
-    select(市区町村, 単位合計, starts_with("得票率_")) %>%
-    pivot_longer(-c(市区町村, 単位合計), names_to = "key", values_to = "得票率") %>%
-    mutate(政党 = recode(key, !!!rate_cols_act4), シナリオ = "実際"),
-  df_dist4 %>%
-    select(市区町村, 単位合計,
-           率_mirai, 率_sansei, 率_hoshu, 率_reiwa, 率_zei) %>%
-    pivot_longer(-c(市区町村, 単位合計), names_to = "key", values_to = "得票率") %>%
-    mutate(政党 = recode(key, !!!rate_cols_hyp4), シナリオ = "仮定（90%按分後）")
-) %>%
-  filter(!is.na(得票率)) %>%
-  mutate(
-    政党     = factor(政党, levels = c("チームみらい","減税日本・ゆうこく連合",
-                                       "参政党","れいわ新選組","日本保守党")),
-    市区町村 = fct_reorder(
-      市区町村,
-      ifelse(政党 == "チームみらい" & シナリオ == "実際", 得票率, NA_real_),
-      .fun = function(x) mean(x, na.rm = TRUE)
-    )
-  )
-
-# 各党の95%予測区間上限
-pi_upper4 <- map_dbl(names(poll_rates4), function(nm) {
-  pr <- poll_rates4[nm]
-  exp(predict(ols_ref, newdata = data.frame(支持率 = pr),
-              interval = "prediction")[, "upr"])
-}) %>% set_names(names(poll_rates4))
-
-pi_lines4 <- tibble(
-  政党   = names(pi_upper4),
-  pi_upr = pi_upper4
-) %>%
-  mutate(政党 = factor(政党, levels = levels(dist4_long$政党)))
-
-ggplot(dist4_long, aes(x = 得票率, y = 市区町村,
-                        color = シナリオ, shape = シナリオ)) +
-  geom_line(aes(group = interaction(市区町村, 政党)),
-            color = "#DDDDDD", linewidth = 0.4) +
-  geom_point(size = 1.8, alpha = 0.85) +
-  geom_vline(data = pi_lines4, aes(xintercept = pi_upr),
-             linetype = "dashed", color = "#2C5F7A", linewidth = 0.6) +
-  scale_color_manual(values = c("実際"="#5D8AA8","仮定（90%按分後）"="#E07B00"),
-                     name = NULL) +
-  scale_shape_manual(values = c("実際"=16,"仮定（90%按分後）"=15), name = NULL) +
-  scale_x_continuous(labels = function(x) paste0(x, "%")) +
-  facet_wrap(~ 政党, ncol = 5, scales = "free_x") +
-  labs(title    = "市区町村別：5党の得票率 実際 vs 仮定（90%按分後）",
-       subtitle = "破線＝各党の95%予測区間上限（世論調査支持率ベース）　■が破線を超えると統計的に異常",
-       x = "得票率（%）", y = NULL) +
-  theme_minimal(base_size = 10) +
-  theme(plot.title         = element_text(face = "bold", size = 12),
-        plot.subtitle      = element_text(color = "#555555", size = 8.5),
-        legend.position    = "top",
-        panel.grid.major.y = element_blank(),
-        panel.grid.minor   = element_blank(),
-        strip.text         = element_text(face = "bold", size = 10))
-```
-
-## 7-5. 総括：5党すべての統計的判定
-
-```{r dist4_summary}
-final4 <- stat_tbl4 %>%
-  mutate(
-    pi_upr_val      = pi_upper4[政党],
-    pct_over_actual = map2_dbl(政党, pi_upr_val, ~ {
-      mean(df_dist4[[rate_key_act4[.x]]] > .y, na.rm = TRUE) * 100
-    }),
-    pct_over_hypo   = map2_dbl(政党, pi_upr_val, ~ {
-      mean(df_dist4[[rate_key_hypo4[.x]]] > .y, na.rm = TRUE) * 100
-    })
-  )
-
-final4 %>%
-  mutate(
-    支持率         = paste0(支持率, "%"),
-    率_実際        = sprintf("%.2f%%", 率_実際),
-    率_仮定        = sprintf("%.2f%%", 率_仮定),
-    z_実際         = sprintf("%.2f σ", z_実際),
-    z_仮定         = sprintf("%.2f σ", z_仮定),
-    p_実際         = sprintf("%.4f",   p_実際),
-    p_仮定         = sprintf("%.4f",   p_仮定),
-    超過率_実際    = sprintf("%.0f%%", pct_over_actual),
-    超過率_仮定    = sprintf("%.0f%%", pct_over_hypo)
-  ) %>%
-  select(政党, 支持率,
-         率_実際, z_実際, p_実際, 超過率_実際, 判定_実際,
-         率_仮定, z_仮定, p_仮定, 超過率_仮定, 判定_仮定) %>%
-  datatable(
-    rownames = FALSE,
-    colnames = c("政党","支持率",
-                 "得票率（実際）","z（実際）","p（実際）","PI超過率（実際）","判定（実際）",
-                 "得票率（仮定）","z（仮定）","p（仮定）","PI超過率（仮定）","判定（仮定）"),
-    options  = list(pageLength = 10, dom = "t", ordering = FALSE, scrollX = TRUE),
-    class    = "stripe hover compact"
-  ) %>%
-  formatStyle("判定_実際",
-    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
-    fontWeight      = "bold",
-    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
-  ) %>%
-  formatStyle("判定_仮定",
-    color           = styleEqual(c("異常","正常"), c("#C0392B","#27AE60")),
-    fontWeight      = "bold",
-    backgroundColor = styleEqual(c("異常","正常"), c("#FDECEA","#EAFAF1"))
-  ) %>%
-  formatStyle("政党",
-    fontWeight      = styleEqual("チームみらい", "bold"),
-    backgroundColor = styleEqual("チームみらい", "#E8F4F8")
-  )
-```
-
-```{r dist4_text, echo=FALSE}
-n_abn4  <- sum(final4$判定_仮定 == "異常")
-n_nor4  <- sum(final4$判定_仮定 == "正常")
-abn4    <- final4 %>% filter(判定_仮定 == "異常") %>% pull(政党)
-mirai_j <- final4 %>% filter(政党 == "チームみらい") %>% pull(判定_仮定)
-```
-
-<div class="callout-result">
-**総括**
-
-「みらい票90%を4党按分」シナリオでは：
-
-- **異常と判定された政党（仮定後）**: `r if(n_abn4 == 0) "なし（全党が正常範囲）" else paste0(n_abn4, "党（", paste(abn4, collapse = "・"), "）")`
-- **正常範囲と判定された政党（仮定後）**: `r n_nor4`党
-- **チームみらい（残票10%）の判定**: `r mirai_j`
-
-`r if(n_abn4 == 0) "全党が正常範囲に収まります。ただし「統計的にあり得ない水準ではない」という意味に過ぎず、按分が実際に行われた証拠ではありません。" else paste0("仮定後の**", paste(abn4, collapse = "・"), "**が統計的に異常です。このシナリオは移転先の政党にも矛盾を生じさせるため、単純な按分移転では説明がつきにくいです。")`
-</div>
-
 ---
 
 *分析実施日: `r Sys.Date()` / データ: 2026_衆院選_比例_東京_r.xlsx（出典: 東京都選挙管理委員会 r08shu_hkai_036.pdf）/ 時事通信世論調査（2026年1月15日時点）*
